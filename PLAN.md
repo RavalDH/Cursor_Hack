@@ -1,229 +1,223 @@
-# PLAN.md — Cursor Hackathon Sudbury 2026
+# PLAN.md — Cursor Hackathon Sudbury 2026 (Team of 3)
 
-> **Read this before writing any code.** Every teammate and every AI agent (Cursor, Claude, etc.) must follow this plan. Do not expand scope. Do not invent new features. If you think the plan is wrong, say so to the team in one sentence — do not silently deviate.
-
----
-
-## 1. Mission (one line)
-
-An AI early-warning assistant for underground mines: it takes any sensor reading and, the moment a zone trends dangerous, speaks the exact Ontario Reg 854 safety procedure with the regulation cited — so the crew acts before it's an emergency, not after.
-
-**Track:** Mining & Industrial Innovation
-**Team size:** 3
-**Time budget:** ~3 hours of build. This is the hard constraint that drives every decision below.
+> **Read this fully before writing any code.** Every teammate and every AI agent (Cursor, Claude) follows this. Do not add tools, libraries, or features not named here. If you think the plan is wrong, say it to the team in one sentence — never silently deviate.
 
 ---
 
-## 2. Hard rules (non-negotiable — agents included)
+## 0. Mission & constraints
 
-1. **One tight thing, fully working > many half-things.** A connected, rehearsed demo wins. Disconnected polish loses.
-2. **Build narrow before wide.** Get one ugly end-to-end slice working FIRST, then make each layer real.
-3. **The HTTP contract (Section 6) is frozen at minute 20.** Backend and frontend integrate over it. Nobody changes it without telling the whole team.
-4. **No new code in the final 30 minutes.** That time is for rehearsal and submission only.
-5. **Cut line is law** (Section 8). When behind, cut in the listed order. Never cut the working `/ask` slice or the pitch.
-6. **Agents: do not over-research.** Do not add libraries, databases, or services not named in this plan. If a task isn't in your phase, don't do it.
+**Build:** An AI early-warning assistant for underground mines. It takes any sensor reading and, the moment a zone trends dangerous, speaks the exact Ontario Reg 854 safety procedure with the regulation cited — so the crew acts before it's an emergency.
 
----
+**Track:** Mining & Industrial Innovation · **Team:** 3 · **Build budget:** ~3 hours.
 
-## 3. Architecture (what we're building)
-
-A small backend + a web UI, talking over HTTP.
-
-```
-[ Lovable Web UI ]  --HTTP-->  [ FastAPI backend ]  -->  [ Gemini LLM ]
-   (renders answer                  /ask, /alert            (generates the
-    + citations,                                             cited answer)
-    plays voice)                        |
-        ^                               v
-        |                        [ 5 Reg 854 docs ]
-   [ Valsea voice ]              (keyword retrieval)
-```
-
-**Core (must work):** retrieval over 5 docs → Gemini cited answer → UI render → voice out.
-**Flourish (only if core is solid):** the `/alert` incident trigger (proactive spoken warning).
-**Stretch prizes (only if time to spare, see Section 9):** TiDB vector store, Nemotron model.
+**The 3 hours drive everything. One tight working thing beats many half-things.**
 
 ---
 
-## 4. Environment & tooling — LOCK THESE, everyone match
+## 1. The three roles (lock before anything else)
 
-| Layer | Tool | Notes |
-|---|---|---|
-| Code editor | **Cursor** | Claim credits early, first-come-first-served |
-| Backend | **Python 3.11+, FastAPI, uvicorn** | One file is fine |
-| LLM | **Gemini API** | We already know it. Do NOT learn Nemotron under the clock |
-| Retrieval | **Plain keyword match** over 5 docs | No vector DB for core. 5 docs don't need one |
-| Frontend / UI | **Lovable** (Pro, code `COMM-CURS-7ACB`) | Owns Best UI/UX prize |
-| Voice | **Valsea** (55 min, hard cap) | Ration it. Test on canned strings, not while debugging |
-| Scraping | **Apify** (`BUILDWITHAPIFY`, $30) | Only if pulling docs live; otherwise paste docs manually |
-| Backend host | **Railway** | See critical note below |
-| Repo | github.com/RavalDH/Cursor_Hack | |
+| Role | Person | Owns | Primary tools |
+|---|---|---|---|
+| **B — Backend** | _____ | retrieval, `/ask`, `/alert`, deploy | Cursor, FastAPI, Gemini, Railway, (Apify) |
+| **F — Frontend** | _____ | UI, render answer+citations, **UI/UX prize** | Lovable, the backend URL |
+| **V — Voice + Pitch** | _____ | voice out, demo script, the 60-sec pitch | Valsea, slides/notes |
 
-### ⚠️ Critical environment gotcha — the #1 thing that breaks team demos
-
-Lovable runs as a **hosted web app on Lovable's domain**. It **cannot** reach `localhost:8000` on your laptop. For the UI to call the backend, the backend needs a **public HTTPS URL**.
-
-**Fix (do this in Phase 1, not at demo time):**
-- Deploy the FastAPI backend to **Railway** early → get the public URL (e.g. `https://cursor-hack.up.railway.app`).
-- Frontend points at that URL, never at localhost.
-- Backend must send **CORS headers** allowing the Lovable origin (already in the stub below).
-
-If Railway deploy is fighting you, fallback: run backend locally + expose with an **ngrok tunnel** → use that public URL. Either way, the frontend talks to a public URL.
-
-### Required secrets (each person sets their own, never commit them)
-```
-GEMINI_API_KEY=...     # backend
-VALSEA_API_KEY=...     # voice
-```
-Put a `.env.example` in the repo with empty keys. Add real `.env` to `.gitignore`. **Never paste keys into chat, screenshots, or commits.**
+Write your names in. Everyone owns their lane; nobody touches another lane's files. That's how 3 people avoid git conflicts.
 
 ---
 
-## 5. Repo structure & merge strategy
+## 2. Tool ownership matrix — what each tool is for, who, when
 
-**We do NOT git-merge tangled code at the end.** The two halves are decoupled and talk over the contract. This is the entire merge strategy.
-
-```
-Cursor_Hack/
-├── PLAN.md                # this file
-├── backend/
-│   ├── main.py            # FastAPI: /ask + /alert
-│   ├── retrieval.py       # keyword match over docs
-│   ├── docs/              # 5 Reg 854 .txt files
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/              # Lovable export (or link to Lovable project)
-└── README.md              # Devpost description (write last)
-```
-
-**Branching:** keep it dumb. `main` only, or one branch per person merged early and often. With 3 people for 3 hours, long-lived branches cause more pain than they prevent. Backend person owns `backend/`, frontend person owns `frontend/` — you rarely touch the same files, so conflicts are minimal.
-
-**Integration happens continuously**, not at the end: the moment the backend is deployed (Phase 1), the frontend points at the real URL and you're integrated. You're never waiting for a big merge.
+| Tool | Owner | What it does for us | When it's used |
+|---|---|---|---|
+| **GitHub** | All | Shared repo, the merge point | Continuously. Pull before every push |
+| **Cursor** | All (mostly B) | Write/debug backend code | Phases 0–4 |
+| **FastAPI** | B | The backend: `/ask` + `/alert` | Phases 0–4 |
+| **Railway** | B | Hosts backend at a **public URL** | Phase 0–1 (deploy early!) |
+| **Gemini** | B | LLM that writes the cited answer | Phase 1 onward |
+| **Apify** | B | Scrape Reg 854 docs (optional) | Phase 0 only, time-boxed |
+| **Lovable** | F | The web UI / dashboard | Phases 0–4 |
+| **Valsea** | V | Text-to-speech voice output | Phase 1 onward, rationed |
+| **TiDB** | B (stretch) | Vector store for retrieval | Stretch only, after Phase 3 |
+| **Devpost** | V | Final submission | Phase 5 |
 
 ---
 
-## 6. THE CONTRACT (frozen at minute 20)
+## 3. Deep tool playbook (how to actually use each one)
 
-This is the seam between backend and frontend. Agree it out loud, paste the stub, then everyone builds against it in parallel.
+### 3.1 GitHub — the merge seam (ALL)
+The repo is `github.com/RavalDH/Cursor_Hack`. All 3 are collaborators with their **own** tokens (never share one).
 
+**The only rule that matters with 3 people:**
+```bash
+git pull origin main --no-rebase   # ALWAYS before you push
+git add .
+git commit -m "clear message"
+git push origin main
 ```
-POST /ask
-  request:  { "question": "what is the procedure when methane exceeds 1.5%?" }
-  response: {
-    "answer": "Evacuate the zone and restore ventilation before re-entry...",
-    "citations": [ { "source": "O. Reg 854 s.123", "text": "..." } ]
-  }
+You rarely conflict because B owns `backend/`, F owns `frontend/`. If a push is rejected → `git pull` first, resolve if asked, push again.
 
-GET /alert      (simulated incident trigger; frontend polls this)
-  response: {
-    "alert": true,
-    "zone": "Zone 3",
-    "metric": "methane",
-    "value": 1.6,
-    "threshold": 1.5,
-    "answer": "Methane in Zone 3 exceeds threshold. Evacuate and ventilate...",
-    "citations": [ { "source": "O. Reg 854 s.123", "text": "..." } ]
-  }
+**First, add `.gitignore` so nobody commits a key:**
+```bash
+echo -e ".env\n__pycache__/\n*.pyc\nnode_modules/" > .gitignore
 ```
 
-### Backend stub — paste into `backend/main.py` at minute 20 so frontend can start immediately
+### 3.2 Cursor — your build accelerator (ALL, mostly B)
+Cursor writes and debugs code from plain-English prompts. Use it well:
+- Open the repo folder in Cursor so it sees the whole project + this PLAN.md.
+- Good prompts to actually paste:
+  - "Read PLAN.md. Build the FastAPI backend in `backend/main.py` exactly matching the contract in Section 5."
+  - "Write a keyword retrieval function over the .txt files in backend/docs/ that returns the top 2 matching sections for a question."
+  - "This error: [paste]. Explain it and fix it."
+  - "Review this for what could break during a live demo."
+- **Rule:** read the code it writes. Don't blind-accept. A bug you don't understand at hour 2 is fatal.
 
+### 3.3 FastAPI + Railway — backend and its PUBLIC URL (B)
+**Why Railway is non-negotiable:** Lovable is a hosted web app. It **cannot reach `localhost`**. The backend MUST be at a public HTTPS URL or the frontend can't call it. This is the #1 thing that breaks team demos. Deploy in Phase 0–1, not at demo time.
+
+Backend stub (`backend/main.py`) — paste at minute 20 so F can start:
 ```python
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI()
-
-# CORS — REQUIRED so the hosted Lovable UI can call this backend.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],          # tighten to the Lovable domain if time
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])  # REQUIRED for Lovable
 
 class AskRequest(BaseModel):
     question: str
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    # Phase 0: hardcoded. Phase 1: replace with real retrieval + Gemini.
-    return {
-        "answer": "STUB: evacuate the zone and restore ventilation before re-entry.",
-        "citations": [{"source": "O. Reg 854 s.123", "text": "Stub citation text."}],
-    }
+    return {"answer": "STUB: evacuate and restore ventilation.",
+            "citations": [{"source": "O. Reg 854 s.123", "text": "stub"}]}
 
 @app.get("/alert")
 def alert():
-    return {
-        "alert": True,
-        "zone": "Zone 3",
-        "metric": "methane",
-        "value": 1.6,
-        "threshold": 1.5,
-        "answer": "STUB: methane in Zone 3 exceeds threshold. Evacuate and ventilate.",
-        "citations": [{"source": "O. Reg 854 s.123", "text": "Stub citation text."}],
-    }
-
-# run: uvicorn main:app --host 0.0.0.0 --port 8000
+    return {"alert": True, "zone": "Zone 3", "metric": "methane",
+            "value": 1.6, "threshold": 1.5,
+            "answer": "STUB: methane high, evacuate and ventilate.",
+            "citations": [{"source": "O. Reg 854 s.123", "text": "stub"}]}
 ```
+`requirements.txt`: `fastapi`, `uvicorn[standard]`, `google-generativeai`, `python-dotenv`
+
+**Deploy to Railway:** New Project → Deploy from GitHub repo → pick `Cursor_Hack`, root `backend/`. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`. Add env var `GEMINI_API_KEY`. Railway gives a public URL → paste it in the team chat. **That URL is what F points the UI at.**
+Fallback if Railway fights you: run locally + `ngrok http 8000` → use the ngrok URL.
+
+### 3.4 Gemini — the cited-answer engine (B)
+Phase 1: replace the stub. Retrieve top sections by keyword, then call Gemini with a strict grounding instruction:
+```python
+import google.generativeai as genai, os
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")  # fast = good for live demo
+
+SYSTEM = """You are a mine-safety assistant. Answer ONLY from the provided
+regulation sections. Cite the section number for every claim. If the sections
+don't cover it, say 'Not found in the provided regulations.' Be concise."""
+
+def answer(question, sections):
+    ctx = "\n\n".join(sections)
+    resp = model.generate_content(f"{SYSTEM}\n\nSECTIONS:\n{ctx}\n\nQUESTION: {question}")
+    return resp.text
+```
+The strict prompt is what gives you *grounded, cited* answers — that's the responsible-AI story the health/data judge respects. Test it returns a real citation before moving on.
+
+### 3.5 Apify — document scraping (B, OPTIONAL, time-boxed to 30 min)
+Only if you want to pull Reg 854 live. **Faster path: just paste 5 sections as `.txt` files into `backend/docs/` manually.** 5 docs don't justify a scraper under a clock. If you do use Apify: Console → a website-content-crawler Actor → point at the Ontario e-Laws Reg 854 page → export text. Code `BUILDWITHAPIFY`, $30 credit. Token from Settings → API & Integrations. **Cut Apify the second it costs more than 30 min.**
+
+### 3.6 Lovable — the UI and the UI/UX prize (F)
+Pro plan, code `COMM-CURS-7ACB`. F builds here in parallel from minute 20 against the stub URL.
+- Prompt Lovable plainly: "Build a mine-safety dashboard. A search box posts a question to `POST {RAILWAY_URL}/ask` and displays the returned `answer` plus each citation as a chip showing its `source`. Add a status panel that polls `GET {RAILWAY_URL}/alert` every 3s; when `alert` is true, show a red banner with the zone, value, and the answer."
+- Swap `{RAILWAY_URL}` for B's real Railway URL the moment it exists.
+- **This is where Best UI/UX is won:** citation chips, a clean green/yellow/red zone state, smooth alert animation. Make it feel alive.
+- Gotcha: if calls fail, it's almost always CORS (check the stub has the middleware) or you're pointing at localhost instead of the public URL.
+
+### 3.7 Valsea — voice output (V)
+Free plan: **55 minutes, one-time hard cap.** Ration it.
+- Phase 1: get TTS speaking a **canned string** first — prove the pipe before wiring real answers. Don't debug against live credits.
+- Get the API key: Valsea → API Keys. Check their docs for the exact TTS endpoint (send text → get audio); don't guess the call, read their quickstart.
+- Phase 3: feed it the real `/ask` answer text.
+- **Always wire a text fallback**: if voice fails live, the answer still shows on screen. A mic/credit failure must never kill the demo.
+
+### 3.8 TiDB — vector store (B, STRETCH ONLY)
+Do not touch until Phase 3 is solid. Swap keyword retrieval for TiDB Serverless vector search (embeddings + similarity). High judge-fit (Glencore judge does RAG + knowledge graphs). Keep keyword search as the fallback path so this can be cut instantly.
 
 ---
 
-## 7. Phase plan (owners + exit criteria)
+## 4. Per-person timeline (minute-by-minute, anchor to real start)
 
-**Roles:**
-- **B = Backend** (retrieval, `/ask`, `/alert`, Railway deploy)
-- **F = Frontend** (Lovable UI, renders answer + citations, owns UI/UX prize)
-- **V = Voice + Pitch** (Valsea wiring, demo script, runs the 60-second pitch)
+| Time | **B (Backend)** | **F (Frontend)** | **V (Voice + Pitch)** |
+|---|---|---|---|
+| **0–20** | Paste stub, push, **deploy to Railway**, share URL | Read contract, scaffold Lovable, redeem credits | Write 1-paragraph demo arc; set up Valsea key |
+| **20–60** | Add docs, keyword retrieval, wire Gemini to `/ask` | Build UI against stub URL; render answer + citations | Valsea speaks a canned string aloud |
+| **~60** | **— ALL THREE assemble the vertical slice —** | | one Q → cited answer → spoken → on screen |
+| **60–120** | Tune retrieval, clean citation output | Polish UI: chips, zone colors, layout | Voice reads REAL answers + text fallback |
+| **120–150** | `/alert` returns real incident + procedure | Poll `/alert`, animate gas value, red banner | Proactive spoken warning on trip |
+| **150–180** | **Freeze.** Help test | **Freeze.** Help test | Rehearse pitch 3×, record backup video, **submit Devpost** |
 
-| Phase | Time | B does | F does | V does | EXIT CRITERIA |
-|---|---|---|---|---|---|
-| **0. Align** | 0–20 min | Paste stub, deploy to Railway, share URL | Read contract, scaffold Lovable | Write 1-paragraph demo arc on paper | Contract agreed, stub live at public URL |
-| **1. Real /ask** | 20–60 min | Keyword retrieval → Gemini, "cite or say you don't know" | Wire UI to real `/ask` URL, render answer + citations | Valsea reads a canned string aloud | `/ask` returns a real cited answer |
-| **2. SLICE** | ~60 min | — assemble — | — assemble — | — assemble — | **ONE question → cited answer → spoken → on screen, connected. If not breathing, STOP adding, fix this.** |
-| **3. Make real** | 60–120 min | Tune retrieval, clean citations | Polish UI: citation chips, layout, liveliness | Voice reads REAL answers + **text fallback** | Each layer solid, fallback works |
-| **4. Flourish** | 120–150 min | `/alert` returns real incident + procedure | Poll `/alert`, animate gas value, show alert | Proactive spoken warning on trip | Incident demo works — **OR cut it** |
-| **5. Ship** | 150–180 min | Freeze. Help test | Freeze. Help test | Rehearse pitch 3×, record backup video, submit Devpost | Submitted early, pitch smooth |
+**Exit gate at minute 60:** if the slice isn't breathing, everyone STOPS adding and fixes it together. Nothing proceeds past a broken slice.
 
 ---
 
-## 8. Cut line (memorize — when behind, sacrifice in THIS order)
+## 5. The contract (frozen at minute 20 — the seam between B and F)
+```
+POST /ask
+  in:  { "question": "procedure when methane exceeds 1.5%?" }
+  out: { "answer": "...", "citations": [ {"source": "O. Reg 854 s.X", "text": "..."} ] }
 
-1. TiDB / Nemotron stretch prizes (already optional)
-2. Incident trigger / `/alert` flourish
+GET /alert
+  out: { "alert": true, "zone": "Zone 3", "metric": "methane",
+         "value": 1.6, "threshold": 1.5,
+         "answer": "...", "citations": [ {"source": "O. Reg 854 s.X", "text": "..."} ] }
+```
+B and F build against this independently. Don't change it without telling everyone.
+
+---
+
+## 6. Cut line (memorize — when behind, sacrifice in THIS order)
+1. TiDB / Nemotron stretch prizes
+2. `/alert` incident trigger (the flourish)
 3. Voice → fall back to on-screen text
 4. UI flourishes → keep it plain but clean
 
-**NEVER cut:** the working `/ask` slice, or the rehearsed pitch. Those two ARE the demo.
+**NEVER cut:** the working `/ask` slice or the rehearsed pitch. Those two ARE the demo.
 
 ---
 
-## 9. Stretch prizes (ONLY if core is solid with time to spare)
+## 7. When a tool breaks → fallback (no panic, just switch)
 
-Do not start these until Phase 3 is done and stable.
-- **TiDB (Best Use of TiDB):** swap keyword retrieval for TiDB Serverless vector search. High judge-fit (Brent/Glencore does RAG + knowledge graphs). Keep keyword search as fallback.
-- **Nemotron (Best Use of Nemotron):** swap Gemini for Nemotron via NVIDIA Brev. Highest friction — last thing to attempt, cut without guilt.
-
-Already covered by the core build: **Best Use of Valsea** (voice) and **Best UI/UX** (Lovable). Don't do extra work for those — just do them well.
+| Breaks | Fallback |
+|---|---|
+| Railway deploy | `ngrok http 8000` on local backend → use that URL |
+| Lovable can't reach backend | Check CORS middleware + confirm you're using the **public** URL, not localhost |
+| Gemini quota/errors | Hardcode 3 strong answers for the demo questions; demo still runs |
+| Valsea voice fails | On-screen text fallback (already wired) |
+| Apify too slow | Paste 5 `.txt` docs by hand |
+| Git push rejected | `git pull origin main --no-rebase`, resolve, push |
+| TiDB fiddly | Keyword retrieval (your default anyway) |
 
 ---
 
-## 10. The pitch (locked — V owns this, memorize it)
+## 8. Prizes this build targets (no extra work)
+- **Best Use of Valsea** — voice (core).
+- **Best UI/UX** — Lovable polish (core).
+- **Best Use of TiDB** — only if stretch reached.
+- Plus a Mining-track placement on the strength of the demo + pitch.
 
+---
+
+## 9. The pitch (locked — V owns it, memorize)
 > "Sensors give you a number. They don't tell your crew what to do. Our system takes any sensor reading — over the same MQTT interface a Becker or Tunik device already uses — and the moment a zone trends dangerous, it speaks the exact Reg 854 procedure with the regulation cited. The crew acts before it's an emergency, not after."
 
-**Demo arc:** show a normal question answered with a citation → trip the simulated gas alarm → assistant proactively speaks the procedure → done. 60 seconds. Don't over-explain. Show what works.
+**Demo arc (60s):** normal question → cited answer → trip the simulated alarm → assistant proactively speaks the procedure → done. Show what works, don't over-explain.
 
 ---
 
-## 11. Devpost submission checklist (Phase 5)
-
-- [ ] Project name + team name
-- [ ] All 3 members listed
+## 10. Devpost checklist (Phase 5)
+- [ ] Project + team name · all 3 members
 - [ ] Problem + solution (use the pitch)
-- [ ] Tools used: Cursor, Lovable, Valsea, Gemini, FastAPI, Railway (+ Apify/TiDB if used)
-- [ ] Demo link / video / screenshots that actually load
-- [ ] **No API keys exposed anywhere**
-- [ ] Submitted BEFORE deadline with buffer (portals jam at the end)
+- [ ] Tools: Cursor, Lovable, Valsea, Gemini, FastAPI, Railway (+ Apify/TiDB if used)
+- [ ] Demo link / video / screenshots that load
+- [ ] **No API keys exposed**
+- [ ] Submitted early, with buffer
