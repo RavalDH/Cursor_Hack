@@ -1,0 +1,23 @@
+O. Reg 854 s.124 - Carbon monoxide (CO) exposure and response
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+Carbon monoxide is a colourless, odourless gas produced by combustion - diesel
+equipment, blasting fumes, and underground fires. It is dangerous because it
+binds to blood far more readily than oxygen, so workers can be incapacitated
+before they sense anything is wrong.
+
+(1) The time-weighted average exposure to carbon monoxide shall not exceed the
+occupational exposure limit of 25 parts per million over an eight-hour shift.
+
+(2) Where carbon monoxide reaches 35 parts per million, the source shall be
+identified and ventilation increased; the supervisor shall be notified.
+
+(3) Where carbon monoxide reaches 100 parts per million, workers in the
+affected area shall don escape respirators and withdraw to fresh air, and the
+area shall be ventilated and re-tested before re-entry.
+
+Because CO often signals a fire or running engine in a confined space, a rising
+CO trend shall be treated as a possible fire indication and reported
+immediately.

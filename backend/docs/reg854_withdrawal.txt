@@ -1,0 +1,25 @@
+O. Reg 854 s.26 - Withdrawal of workers from a dangerous place
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+This section is the backbone of the early-warning response: when a place
+underground becomes dangerous, the duty is to get people out first and fix the
+condition second.
+
+(1) Where the health or safety of a worker is or is likely to be endangered,
+the worker shall be withdrawn from the dangerous place to a safe location, and
+the dangerous place shall be barricaded or otherwise guarded against
+inadvertent entry.
+
+(2) No worker shall be permitted to enter or remain in the dangerous place
+except for the purpose of correcting the condition, and then only with adequate
+protective equipment and under the direction of a supervisor.
+
+(3) Work shall not resume in the affected place until the condition that
+created the danger has been corrected and the place has been examined and
+declared safe.
+
+Early-warning intent: acting on a rising trend allows an orderly withdrawal
+well before the atmosphere reaches a level that would force an emergency
+evacuation.

@@ -1,0 +1,28 @@
+O. Reg 854 s.123 - Methane (flammable gas) limits and worker withdrawal
+
+NOTE: This file is an excerpted, plain-language working copy of the relevant
+parts of Ontario Regulation 854 (Mines and Mining Plants) for offline use at
+the edge. It is for demo/decision-support and is not a substitute for the
+official consolidated regulation.
+
+Where methane or another flammable gas is present in the atmosphere of an
+underground workplace, the following applies:
+
+(1) Where the concentration of methane reaches 1.0 per cent by volume in the
+general body of air, the supervisor shall be notified and the cause shall be
+investigated and corrected. Ventilation shall be checked and increased as
+required to dilute and carry away the gas.
+
+(2) Where the concentration of methane reaches 1.25 per cent by volume,
+electrical equipment that is not flameproof in the affected area shall be
+de-energized, and no further drilling, blasting or other ignition-capable work
+shall be carried on.
+
+(3) Where the concentration of methane reaches 2.5 per cent by volume, all
+workers shall be withdrawn from the affected area to a safe place in fresh air,
+the area shall be barricaded against entry, and work shall not resume until the
+concentration has been reduced and the area declared safe by a supervisor.
+
+Trend guidance: a methane concentration that is rising toward these limits is
+itself a warning condition. Workers should not wait for a fixed alarm value
+before acting where the gas is clearly climbing in a poorly ventilated area.

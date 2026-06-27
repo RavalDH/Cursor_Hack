@@ -1,0 +1,25 @@
+O. Reg 854 s.118 - Ventilation and airflow underground
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+Ventilation is the primary control for gas underground: you dilute and remove
+hazardous gases by moving enough fresh air through each working zone. When
+airflow drops, gases that were being safely carried away begin to accumulate,
+which is why a falling airflow reading frequently precedes a rising gas reading.
+
+(1) A mechanical ventilation system shall be provided and operated to supply
+each underground workplace with air of sufficient quantity and quality to
+dilute and render harmless any airborne hazardous substances and to provide a
+working environment that does not endanger a worker's health.
+
+(2) The quantity of air shall be sufficient for the number of workers and the
+diesel equipment in use in the zone; where diesel engines operate, additional
+airflow is required to dilute exhaust gases.
+
+(3) Where the ventilation system fails or airflow falls below the planned
+quantity for a zone, work that generates gas or that depends on dilution shall
+stop until adequate airflow is restored.
+
+Trend guidance: treat declining airflow together with rising methane or CO as a
+single developing hazard, not two separate readings.

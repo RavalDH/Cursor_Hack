@@ -1,0 +1,24 @@
+O. Reg 854 s.119 - Testing the atmosphere for gas
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+You cannot manage what you do not measure. Continuous and spot testing of the
+mine atmosphere is what makes trend detection possible in the first place.
+
+(1) The atmosphere of an underground workplace shall be tested for oxygen
+content and for hazardous gases as often as necessary to ensure the health and
+safety of workers, and in any case before workers enter a place that may
+contain a hazardous atmosphere.
+
+(2) Testing shall be carried out with instruments that are appropriate for the
+gases that may be present, that are maintained in good working order, and that
+are calibrated at the intervals recommended by the manufacturer.
+
+(3) The results of atmospheric testing shall be recorded, and where a result
+indicates a developing hazard the supervisor shall be notified so that
+corrective action can be taken.
+
+Trend guidance: a single reading is a snapshot; a sequence of readings is the
+signal. Retaining recent readings per zone is what lets the system distinguish
+a stable atmosphere from one that is rising toward a limit.
