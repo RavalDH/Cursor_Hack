@@ -27,22 +27,57 @@ logger = logging.getLogger(__name__)
 class ZoneSimulator:
     """Generates a stream of realistic-looking readings for all zones.
 
-    Each zone gets a small random walk around a baseline (sensors are noisy and
-    conditions drift). The designated climbing zone adds a slow, steady methane
-    increase on top so it eventually trips yellow and then red.
+    The model now includes a closed ventilation-control loop, because the point
+    of the system is not just to alarm but to *act*. Real mine ventilation works
+    exactly this way: as gas builds, fans ramp to push more fresh air through the
+    zone, which dilutes and sweeps the gas out; as the gas clears, the fans ease
+    back to an idle baseline to save power. Critically, the only mitigation lever
+    is airflow — we never enrich oxygen, because more oxygen underground raises
+    explosion risk rather than lowering it.
+
+    The designated climbing zone models an intermittent gas inrush (a strata
+    release/blast): gas pours in until the zone hits danger, the source is then
+    brought under control, and the ramped fan clears the zone back to green. The
+    cycle then repeats so the full green -> red -> ventilating -> green arc can be
+    shown live at any moment.
     """
+
+    # Fan dynamics (percent of full speed). Idle is a non-zero baseline because
+    # a zone is always getting *some* fresh air; ramp is faster than ease so the
+    # system reacts aggressively to danger but powers down gently.
+    FAN_IDLE = 20.0
+    FAN_RAMP = 15.0  # +%/tick while the zone is elevated
+    FAN_EASE = 10.0  # -%/tick once the zone is back below the warning level
+    # Airflow (m^3/s) is a direct function of fan speed: idle gives a baseline
+    # sweep, full speed roughly doubles it.
+    _AIRFLOW_BASE = 3.0
+    _AIRFLOW_RANGE = 5.0
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._climbing_zone = settings.climbing_zone
-        # Per-zone current values. Starting methane is comfortably green.
+
+        # Gas-source phase for the demo zone: "leaking" = inrush adding gas,
+        # "venting" = source controlled, fan clearing the residual gas.
+        self._source_phase = "leaking"
+        # When venting drops methane back to this baseline, a fresh inrush starts.
+        self._reset_level = 0.4
+        # The inrush overshoots a little past the danger line before the source
+        # is "controlled". Without this, mitigation pulls methane back under 1.5
+        # within a tick or two and the red state is too brief to see or alarm on;
+        # the overshoot keeps the zone clearly red for several seconds.
+        self._peak_level = settings.methane_danger + 0.3
+
+        # Per-zone current values, including the live fan speed. Starting methane
+        # is comfortably green and the fan starts idling.
         self._state: dict[str, dict[str, float]] = {}
         for zone in settings.zone_list:
             self._state[zone] = {
                 "methane": random.uniform(0.3, 0.6),
                 "co": random.uniform(5.0, 15.0),
                 "temp": random.uniform(22.0, 28.0),
-                "airflow": random.uniform(4.0, 6.0),
+                "airflow": self._AIRFLOW_BASE + 0.2 * self._AIRFLOW_RANGE,
+                "fan": self.FAN_IDLE,
             }
 
     def _drift(self, value: float, step: float, low: float, high: float) -> float:
@@ -54,28 +89,76 @@ class ZoneSimulator:
         """Advance one zone by a single tick and return its new reading."""
         s = self._state[zone]
 
-        # Normal background drift for every metric.
+        # CO and temperature just drift; they aren't part of the methane control
+        # loop but keep the readings feeling alive.
         s["co"] = self._drift(s["co"], 1.5, 0.0, 40.0)
         s["temp"] = self._drift(s["temp"], 0.3, 18.0, 38.0)
-        s["airflow"] = self._drift(s["airflow"], 0.2, 1.0, 8.0)
 
+        # 1) Move methane: the climbing zone has a gas source; others just hover.
         if zone == self._climbing_zone:
-            # Steady upward creep plus a little noise. ~+0.02%/tick means the
-            # zone crosses the 1.5% danger line within a minute or two — long
-            # enough to narrate, short enough for a live demo.
-            s["methane"] = self._drift(s["methane"], 0.01, 0.0, 5.0) + 0.02
-            # As methane builds we also let airflow sag, mimicking the real link
-            # between failing ventilation and accumulating gas.
-            s["airflow"] = max(1.0, s["airflow"] - 0.05)
+            self._step_gas_source(s)
         else:
-            s["methane"] = self._drift(s["methane"], 0.03, 0.2, 0.95)
+            self._step_background_methane(s)
+
+        # 2) Run the fan control loop + airflow mitigation for every zone.
+        self._apply_fan_loop(s)
 
         return GasReading(
             methane=round(s["methane"], 3),
             co=round(s["co"], 1),
             temp=round(s["temp"], 1),
             airflow=round(s["airflow"], 2),
+            fan_speed=round(s["fan"], 1),
         )
+
+    def _step_gas_source(self, s: dict[str, float]) -> None:
+        """Add/withhold methane for the demo zone's intermittent inrush.
+
+        While "leaking", gas pours in at the configured climb rate until the
+        zone reaches danger; at that point we consider the source controlled
+        (e.g. blasting stopped, fissure isolated) and switch to "venting" so the
+        already-ramped fan can clear the residual gas. Once cleared back to the
+        reset baseline, a new inrush begins and the arc repeats.
+        """
+        noise = random.uniform(-0.005, 0.005)
+        if self._source_phase == "leaking":
+            s["methane"] = s["methane"] + self._settings.methane_climb_rate + noise
+            if s["methane"] >= self._peak_level:
+                self._source_phase = "venting"
+        else:  # venting — no new gas; mitigation in _apply_fan_loop draws it down
+            if s["methane"] <= self._reset_level:
+                self._source_phase = "leaking"
+
+    def _step_background_methane(self, s: dict[str, float]) -> None:
+        """Keep non-climbing zones gently mean-reverting around a safe level.
+
+        These zones have no gas source, so they should sit calmly green. We
+        mean-revert toward a low baseline with a little noise; combined with the
+        idle-fan mitigation below this settles them around ~0.5%.
+        """
+        target = 0.55
+        s["methane"] += (target - s["methane"]) * 0.15 + random.uniform(-0.03, 0.03)
+
+    def _apply_fan_loop(self, s: dict[str, float]) -> None:
+        """Auto-mitigation: ramp the fan on elevated gas, then dilute via airflow.
+
+        Order matches the real control logic: decide the fan response from the
+        current gas level, then apply this tick's airflow-driven removal. We ramp
+        whenever methane is at or above the warning level (covers yellow and red)
+        and otherwise ease back toward idle. Mitigation removes methane in
+        proportion to fan speed — full fan clears fastest — and is strictly
+        airflow-based (never oxygen).
+        """
+        if s["methane"] >= self._settings.methane_warning:
+            s["fan"] = min(100.0, s["fan"] + self.FAN_RAMP)
+        else:
+            s["fan"] = max(self.FAN_IDLE, s["fan"] - self.FAN_EASE)
+
+        removal = (s["fan"] / 100.0) * self._settings.mitigation_rate
+        s["methane"] = max(0.0, s["methane"] - removal)
+
+        # Airflow tracks fan speed directly: more fan, more fresh air.
+        s["airflow"] = self._AIRFLOW_BASE + (s["fan"] / 100.0) * self._AIRFLOW_RANGE
 
     def step_all(self) -> dict[str, GasReading]:
         """Advance every zone one tick; returns {zone_id: reading}."""

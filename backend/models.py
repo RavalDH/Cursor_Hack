@@ -27,6 +27,10 @@ class GasReading(BaseModel):
     co: float = Field(..., description="Carbon monoxide, parts per million")
     temp: float = Field(..., description="Temperature, degrees Celsius")
     airflow: float = Field(..., description="Airflow, cubic metres per second")
+    # Current ventilation fan speed (0-100%) for this zone. Defaults to the idle
+    # baseline so older payloads that predate fan control still validate and are
+    # simply treated as "fan idling" rather than being rejected.
+    fan_speed: float = Field(default=20.0, description="Ventilation fan speed, %")
 
 
 class ZoneStatus(BaseModel):
@@ -39,6 +43,14 @@ class ZoneStatus(BaseModel):
     airflow: float
     status: Status
     trend: Trend
+    # Live ventilation fan speed (0-100%). Rises automatically as methane climbs.
+    fan_speed: float
+    # True while the fan is actively ramped above idle, i.e. the zone is being
+    # auto-mitigated right now. Lets the UI show a "ventilating" indicator.
+    mitigation: bool
+    # The concrete safety steps being taken/advised for this zone's status — the
+    # "solve". Empty (or normal-operation) when green.
+    actions: list[str] = Field(default_factory=list)
 
 
 class ZonesResponse(BaseModel):
@@ -73,6 +85,13 @@ class AlertResponse(BaseModel):
     trend: Trend | None = None
     answer: str | None = None
     citations: list[Citation] = Field(default_factory=list)
+    # Recovery signal: when no zone is alerting but one just came back from red
+    # to green, we surface it here so the UI/voice can give an "all clear" line
+    # instead of going silent. Silence after an alarm reads as "did it fix
+    # itself or did the system die?" — an explicit all-clear is reassuring.
+    recovered: bool = False
+    recovered_zone: str | None = None
+    message: str | None = None
 
 
 class AskRequest(BaseModel):

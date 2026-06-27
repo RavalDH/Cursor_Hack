@@ -18,6 +18,31 @@ from models import GasReading, Status, Trend, ZoneStatus
 # constantly toggling a zone between stable and rising.
 _RISING_SLOPE_EPSILON = 0.01
 
+# The fan's idle baseline (matches ZoneSimulator.FAN_IDLE). Anything above this
+# means the fan has actively ramped, i.e. the zone is being mitigated right now.
+_FAN_IDLE = 20.0
+
+
+def safety_actions(status: Status) -> list[str]:
+    """The concrete safety steps for a zone at a given status — the "solve".
+
+    These mirror the escalating Reg 854 response: a yellow zone gets early,
+    reversible measures (ramp ventilation, tell the supervisor); a red zone gets
+    the full withdrawal sequence. Cutting power to non-flameproof equipment and
+    stopping ignition-capable work matter because methane only explodes with an
+    ignition source — remove the spark and you buy time to get people out.
+    """
+    if status == "red":
+        return [
+            "Fan at maximum airflow",
+            "Cut power to non-flameproof equipment",
+            "Stop ignition-capable work",
+            "Evacuate zone - withdraw to fresh air",
+        ]
+    if status == "yellow":
+        return ["Ventilation fan ramping up", "Notify supervisor"]
+    return ["Normal operation"]
+
 
 def detect_trend(readings: list[GasReading]) -> Trend:
     """Decide whether methane is rising or stable over the recent window.
@@ -47,16 +72,21 @@ def classify_status(methane: float, trend: Trend, settings: Settings) -> Status:
 
     Rules (demo thresholds — real legal limits differ, see docs/reg854_methane):
       red    : methane at/above the danger threshold (>= 1.5%)
-      yellow : in the warning band (1.0%-1.5%) OR rising while below danger
-      green  : below the warning level and not rising
+      yellow : in the warning band (>= 1.0%), OR rising while already in the
+               early-warning band (>= 0.9%)
+      green  : below the early-warning band, or rising only at baseline noise
 
-    The "OR rising" clause is the early-warning behaviour: a zone climbing while
-    still technically "safe" is already worth a warning.
+    The early-warning band is what makes the trend useful without being jumpy: a
+    zone climbing *toward* danger flags early, but random noise on a calm zone
+    sitting at ~0.5% can't flip it yellow.
     """
     if methane >= settings.methane_danger:
         return "red"
 
-    if methane >= settings.methane_warning or trend == "rising":
+    if methane >= settings.methane_warning:
+        return "yellow"
+
+    if trend == "rising" and methane >= settings.methane_early_warning:
         return "yellow"
 
     return "green"
@@ -77,6 +107,9 @@ def evaluate_zone(
     trend = detect_trend(readings)
     status = classify_status(latest.methane, trend, settings)
 
+    # Fan is actively mitigating whenever it has ramped above its idle baseline.
+    mitigation = latest.fan_speed > _FAN_IDLE
+
     return ZoneStatus(
         id=zone_id,
         methane=round(latest.methane, 3),
@@ -85,6 +118,9 @@ def evaluate_zone(
         airflow=round(latest.airflow, 2),
         status=status,
         trend=trend,
+        fan_speed=round(latest.fan_speed, 1),
+        mitigation=mitigation,
+        actions=safety_actions(status),
     )
 
 

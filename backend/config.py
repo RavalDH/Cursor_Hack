@@ -39,8 +39,25 @@ class Settings(BaseSettings):
     history_size: int = 10
     methane_danger: float = 1.5
     methane_warning: float = 1.0
+    # A "rising" trend only escalates a zone to yellow once methane is already in
+    # this early-warning band. Without it, normal sensor noise on a calm zone
+    # (~0.5%) can read as "rising" and false-flag a safe zone yellow.
+    methane_early_warning: float = 0.9
     co_warning: float = 35.0
     co_danger: float = 100.0
+
+    # --- Simulator: gas source + ventilation mitigation model ---
+    # How fast the demo zone's methane climbs while a gas inrush is active, in
+    # %/tick. Tuned with publish_interval=1s so the zone crosses the 1.5% danger
+    # line in roughly 10 seconds from a green baseline — fast enough to narrate
+    # live without anyone waiting around.
+    methane_climb_rate: float = 0.16
+    # How much methane the ventilation fan removes per tick at full speed, in
+    # %/tick (scaled by fan_speed/100). Tuned so a red zone, once the fan is
+    # ramped up, recovers back to green in ~15-20s. Mitigation is airflow ONLY:
+    # we never add oxygen, since enriching oxygen underground worsens explosion
+    # risk — the only safe lever is diluting and sweeping the gas out.
+    mitigation_rate: float = 0.11
 
     # --- Simulator ---
     publish_interval: float = 1.0

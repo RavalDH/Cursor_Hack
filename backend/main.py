@@ -107,7 +107,10 @@ app = FastAPI(title="Mine Gas Safety Edge Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Must stay False alongside allow_origins=["*"]: the CORS spec forbids the
+    # wildcard origin together with credentials. The frontend doesn't send
+    # cookies/auth, so this loses us nothing and keeps the headers valid.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -154,14 +157,27 @@ async def on_shutdown() -> None:
 
 
 def _current_zone_statuses(ctx: AppContext) -> list[ZoneStatus]:
-    """Compute the status/trend for every zone that has data."""
+    """Compute the status/trend for every zone that has data.
+
+    Side effect: records each zone's status in the store so red->green
+    recoveries are detected. Both /zones and /alert call this, and the frontend
+    polls /zones every couple of seconds, so transitions are caught reliably.
+    """
     statuses: list[ZoneStatus] = []
     for zone_id in ctx.store.all_zone_ids():
         history = ctx.store.get_history(zone_id)
         zone_status = evaluate_zone(zone_id, history, ctx.settings)
         if zone_status is not None:
             statuses.append(zone_status)
+            ctx.store.note_status(zone_id, zone_status.status)
     return statuses
+
+
+def _zone_label(zone_id: str) -> str:
+    """Turn 'zone3' into a spoken-friendly 'Zone 3' for the all-clear message."""
+    if zone_id.lower().startswith("zone") and zone_id[4:].isdigit():
+        return f"Zone {zone_id[4:]}"
+    return zone_id
 
 
 @app.get("/zones", response_model=ZonesResponse)
@@ -203,6 +219,21 @@ async def get_alert() -> AlertResponse:
             worst.status == "yellow" and worst.trend == "rising"
         )
         if not fires:
+            # Nothing alarming right now. But if a zone just came back from red
+            # to green, give an explicit "all clear" so the demo's voice line
+            # has something reassuring to say instead of falling silent.
+            recovered_zone = ctx.store.recent_recovery()
+            if recovered_zone is not None:
+                label = _zone_label(recovered_zone)
+                return AlertResponse(
+                    alert=False,
+                    recovered=True,
+                    recovered_zone=recovered_zone,
+                    message=(
+                        f"{label} stabilized. Ventilation restored airflow. "
+                        "Everything is under control now."
+                    ),
+                )
             return AlertResponse(alert=False)
 
         # Methane is the driver of the demo trend; report it as the metric.

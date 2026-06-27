@@ -23,6 +23,12 @@ class ZoneState:
         # exactly the last N without any manual trimming.
         self.readings: deque[GasReading] = deque(maxlen=history_size)
         self.last_update: float | None = None
+        # Recovery tracking for the "all clear" message on /alert. We latch
+        # `was_red` while a zone is red and clear it on the return to green —
+        # because a recovering zone physically passes back through yellow, so a
+        # strict red->green adjacency check would almost never fire.
+        self.was_red: bool = False
+        self.recovered_at: float | None = None
 
     def add(self, reading: GasReading) -> None:
         self.readings.append(reading)
@@ -62,6 +68,33 @@ class StateStore:
         with self._lock:
             zone = self._zones.get(zone_id)
             return list(zone.readings) if zone else []
+
+    def note_status(self, zone_id: str, status: str) -> None:
+        """Record a zone's status and timestamp when it recovers to green.
+
+        We latch `was_red` while the zone is red, then stamp recovered_at the
+        moment it next reaches green (having passed back down through yellow).
+        Idempotent across repeated polls: once cleared, a zone that simply stays
+        green won't keep looking freshly recovered.
+        """
+        with self._lock:
+            zone = self._zones.get(zone_id)
+            if zone is None:
+                return
+            if status == "red":
+                zone.was_red = True
+            elif status == "green" and zone.was_red:
+                zone.recovered_at = time.time()
+                zone.was_red = False
+
+    def recent_recovery(self, window_seconds: float = 5.0) -> str | None:
+        """Return a zone id that recovered red->green within the window, if any."""
+        with self._lock:
+            now = time.time()
+            for zone in self._zones.values():
+                if zone.recovered_at and now - zone.recovered_at <= window_seconds:
+                    return zone.zone_id
+            return None
 
     def all_zone_ids(self) -> list[str]:
         with self._lock:
