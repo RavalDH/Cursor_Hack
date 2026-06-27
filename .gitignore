@@ -6,6 +6,7 @@ node_modules/
 # Python virtual environment (local only)
 venv/
 backend/venv/
+.venv/
 
 # Offline data historian + rotating app logs (runtime data, never committed)
 logs/
@@ -13,3 +14,10 @@ backend/logs/
 
 # Local-only developer explainer (kept out of GitHub by request)
 HOW_IT_WORKS.md
+
+# OS / editor cruft
+.DS_Store
+~$*
+
+# Presentation deck (kept out of GitHub by request)
+presentation/*.pptx
