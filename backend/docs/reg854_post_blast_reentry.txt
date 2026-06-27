@@ -1,0 +1,28 @@
+O. Reg 854 s.119/286 - Post-blast re-entry and toxic gases (CO, NO2)
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+Blasting underground produces carbon monoxide (CO) and nitrogen dioxide (NO2)
+along with other gases. These must be cleared by ventilation before workers
+return to the face. Carbon monoxide is the governing gas for re-entry because it
+is produced in large quantity and clears more slowly than the others, so a safe
+CO reading is the practical signal that the air has recovered.
+
+(1) After a blast, no worker shall return to the affected area until ventilation
+has cleared the smoke and gases and the atmosphere has been tested and found
+within safe limits. Re-entry is judged on measured gas concentrations, not on a
+fixed waiting time alone.
+
+(2) Carbon monoxide shall be controlled below the applicable occupational limit
+(commonly taken as 25 ppm as an 8-hour average) before unprotected re-entry. A
+short-term exposure limit governs brief exposures during the clearing period.
+
+(3) Nitrogen dioxide is acutely toxic at low concentrations and shall be treated
+as a serious hazard even when carbon monoxide appears to be clearing. It must be
+ventilated out and re-tested; workers shall not rely on odour to judge its
+presence.
+
+Re-entry intent: ramping ventilation immediately after the blast shortens the
+clearance time and lets the crew return to the face sooner and more safely. The
+fixed monitor on the level provides the confirming readings for re-entry.

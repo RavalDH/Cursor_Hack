@@ -1,0 +1,26 @@
+O. Reg 854 s.120 - Oxygen content of the underground atmosphere
+
+NOTE: Excerpted plain-language working copy for offline edge use. Not the
+official consolidated regulation.
+
+Workers underground depend on the ventilation system to maintain a breathable
+atmosphere. Oxygen can be displaced by other gases (for example after a blast or
+from an inrush) or consumed by oxidation, fire, or diesel engines. Unlike the
+flammable and toxic gases, with oxygen it is a LOW reading that signals danger.
+
+(1) The oxygen content of the air in an underground workplace shall be maintained
+at a normal level by ventilation. Normal fresh air is about 20.9 per cent oxygen
+by volume.
+
+(2) Where the oxygen concentration falls below approximately 19.5 per cent, the
+condition shall be treated as an oxygen-deficiency warning: ventilation shall be
+increased, the cause of the deficiency investigated, and the supervisor notified.
+
+(3) Where the oxygen concentration falls to a dangerous level (approximately 18
+per cent or below), workers shall not enter or remain in the area without
+supplied-air breathing apparatus. The area shall be ventilated and re-tested
+before normal re-entry.
+
+Trend guidance: a falling oxygen reading alongside rising carbon monoxide or
+methane is a single developing hazard — often a fire, a blast, or a gas inrush —
+and shall be acted on together, not as separate readings.

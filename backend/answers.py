@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 _METRIC_DOC = {
     "methane": "reg854_methane.txt",
     "co": "reg854_carbon_monoxide.txt",
+    "no2": "reg854_post_blast_reentry.txt",
+    "o2": "reg854_oxygen.txt",
+    "co2": "reg854_ventilation.txt",
 }
 
 # Fixed procedure text per (metric, status). Written in plain imperative voice
@@ -48,6 +51,26 @@ _PROCEDURES: dict[tuple[str, Status], str] = {
         "respirators and withdraw to fresh air. Ventilate and re-test the area "
         "before anyone re-enters."
     ),
+    ("no2", "yellow"): (
+        "Nitrogen dioxide is elevated — typical of post-blast fumes or diesel "
+        "exhaust. Hold re-entry, increase ventilation to clear the heading, and "
+        "notify the supervisor."
+    ),
+    ("no2", "red"): (
+        "Nitrogen dioxide has reached a dangerous level. Do not enter the "
+        "affected heading. Keep the crew out, ventilate fully, and re-test before "
+        "anyone re-enters — NO2 is acutely toxic at low concentrations."
+    ),
+    ("o2", "yellow"): (
+        "Oxygen is below the normal level in this level's air. Treat as an "
+        "oxygen-deficiency warning: increase ventilation, identify what is "
+        "displacing or consuming the oxygen, and notify the supervisor."
+    ),
+    ("o2", "red"): (
+        "Oxygen is dangerously low. Do not enter without supplied-air breathing "
+        "apparatus. Withdraw any workers, ventilate the level, and re-test before "
+        "re-entry — an oxygen-deficient atmosphere can incapacitate in seconds."
+    ),
 }
 
 # Keywords used to quote the most relevant clause from each doc as the citation.
@@ -56,6 +79,10 @@ _SNIPPET_KEYWORDS: dict[tuple[str, Status], str] = {
     ("methane", "red"): "withdrawn barricaded de-energized declared safe",
     ("co", "yellow"): "increased source notified ventilation",
     ("co", "red"): "respirators withdraw fresh air re-tested",
+    ("no2", "yellow"): "nitrogen dioxide blast fumes ventilation re-entry",
+    ("no2", "red"): "nitrogen dioxide withdraw ventilate re-tested toxic",
+    ("o2", "yellow"): "oxygen deficiency ventilation displaced",
+    ("o2", "red"): "oxygen deficient supplied air withdraw re-test",
 }
 
 
@@ -102,6 +129,28 @@ _ASK_TOPICS: list[tuple[tuple[str, ...], str]] = [
         "For carbon monoxide: increase ventilation and find the source early, "
         "treat a rising trend as a possible fire, and at dangerous levels don "
         "escape respirators and withdraw to fresh air before re-testing.",
+    ),
+    (
+        ("blast", "re-entry", "reentry", "re-enter", "post-blast", "clear", "clearance"),
+        "After a blast, hold re-entry until the air clears. Carbon monoxide and "
+        "nitrogen dioxide are the governing gases and CO clears slowest, so use "
+        "CO falling back below its limit (with NO2 also clear) as the re-entry "
+        "criterion. Ramp ventilation to shorten clearance time, and confirm with "
+        "the fixed monitor before sending the crew back to the face.",
+    ),
+    (
+        ("no2", "nitrogen", "dioxide", "nox", "fumes"),
+        "For nitrogen dioxide: it is acutely toxic at low ppm and is a classic "
+        "post-blast and diesel-exhaust gas. Hold re-entry, ventilate the heading, "
+        "and re-test before entry; never rely on smell, as NO2 can be dangerous "
+        "below the level it can be detected by odour.",
+    ),
+    (
+        ("oxygen", "o2", "deficiency", "deficient", "asphyxiant"),
+        "For oxygen: normal air is about 20.9%. Below ~19.5% is an oxygen-"
+        "deficiency warning and below ~18% is dangerous. Increase ventilation, "
+        "find what is displacing or consuming the oxygen, and never enter a "
+        "deficient atmosphere without supplied-air breathing apparatus.",
     ),
     (
         ("airflow", "ventilation", "air", "fan"),

@@ -1,16 +1,26 @@
-"""Simulated zone gas readings.
+"""Simulated per-level sensor readings, modelled on a real drill-and-blast cycle.
 
 Two jobs in one file:
-  1. The standalone publisher (run as `python simulator.py`) that pushes
-     readings to the local MQTT broker, standing in for real sensor nodes.
-  2. The reusable generation logic (`ZoneSimulator`), imported by main.py so the
+  1. The standalone publisher (`python simulator.py`) that pushes readings to the
+     local MQTT broker, standing in for the real sensor stations on each level.
+  2. The reusable generation logic (`LevelSimulator`), imported by main.py so the
      USE_MQTT=false internal-timer fallback produces *identical* readings without
-     a broker. Sharing the logic is what makes the two modes indistinguishable
-     at the /zones output, which is the whole point of the safety net.
+     a broker. Sharing the logic is what makes the two modes indistinguishable at
+     the /levels output — the demo's safety net.
 
-The numbers are not physically rigorous — they're chosen to look realistic and,
-crucially, to give the demo a clear story: one zone steadily climbs methane
-toward danger so the audience sees green -> yellow -> red unfold.
+What it models (and why it reads like a mine):
+  * Every level reports a full multi-gas picture: CH4, CO, CO2, NO2, O2, plus
+    airflow and temperature — what a real fixed environmental station heads up.
+  * The active production level runs the **drill-and-blast cycle**: a blast fills
+    the heading with carbon monoxide and nitrogen dioxide (and a little methane),
+    oxygen dips, and then **ventilation-on-demand** ramps the fan to clear the
+    gases. CO clears slowest, so CO is what governs **re-entry** — exactly as in
+    practice. Once the air is below the re-entry limit, the cycle rests and then
+    blasts again, so the full "blast -> clearing -> re-entry -> safe" arc plays
+    on a loop for the demo.
+  * Other levels sit safely on fresh air with gentle sensor noise.
+
+The numbers are tuned to be watchable in seconds, not physically rigorous.
 """
 
 import json
@@ -24,58 +34,52 @@ from models import GasReading
 logger = logging.getLogger(__name__)
 
 
-class ZoneSimulator:
-    """Generates a stream of realistic-looking readings for all zones.
+class LevelSimulator:
+    """Generates a stream of realistic multi-gas readings for all levels.
 
-    The model now includes a closed ventilation-control loop, because the point
-    of the system is not just to alarm but to *act*. Real mine ventilation works
-    exactly this way: as gas builds, fans ramp to push more fresh air through the
-    zone, which dilutes and sweeps the gas out; as the gas clears, the fans ease
-    back to an idle baseline to save power. Critically, the only mitigation lever
-    is airflow — we never enrich oxygen, because more oxygen underground raises
-    explosion risk rather than lowering it.
-
-    The designated climbing zone models an intermittent gas inrush (a strata
-    release/blast): gas pours in until the zone hits danger, the source is then
-    brought under control, and the ramped fan clears the zone back to green. The
-    cycle then repeats so the full green -> red -> ventilating -> green arc can be
-    shown live at any moment.
+    Ventilation is a closed loop: as any hazardous gas builds, the fan ramps to
+    push more fresh air through the level, which dilutes and sweeps the gas out;
+    as the air clears, the fan eases back to an idle baseline to save energy
+    (this is ventilation-on-demand). The only mitigation lever is airflow — we
+    never enrich oxygen, because more oxygen underground raises explosion risk.
     """
 
-    # Fan dynamics (percent of full speed). Idle is a non-zero baseline because
-    # a zone is always getting *some* fresh air; ramp is faster than ease so the
-    # system reacts aggressively to danger but powers down gently.
+    # Fan dynamics (percent of full speed). Idle is a non-zero baseline because a
+    # level always gets *some* fresh air; ramp is faster than ease so the system
+    # reacts hard to danger but powers down gently.
     FAN_IDLE = 20.0
-    FAN_RAMP = 15.0  # +%/tick while the zone is elevated
-    FAN_EASE = 10.0  # -%/tick once the zone is back below the warning level
-    # Airflow (m^3/s) is a direct function of fan speed: idle gives a baseline
-    # sweep, full speed roughly doubles it.
+    FAN_RAMP = 18.0  # +%/tick while a hazard is present
+    FAN_EASE = 10.0  # -%/tick once the level is clear
+    # Airflow (m^3/s) is a direct function of fan speed.
     _AIRFLOW_BASE = 3.0
-    _AIRFLOW_RANGE = 5.0
+    _AIRFLOW_RANGE = 6.0
+
+    # Fresh-air baselines for the non-flammable channels.
+    _O2_FRESH = 20.9
+    _CO2_FRESH = 0.04
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._climbing_zone = settings.climbing_zone
+        self._blast_level = settings.active_blast_level
 
-        # Gas-source phase for the demo zone: "leaking" = inrush adding gas,
-        # "venting" = source controlled, fan clearing the residual gas.
-        self._source_phase = "leaking"
-        # When venting drops methane back to this baseline, a fresh inrush starts.
-        self._reset_level = 0.4
-        # The inrush overshoots a little past the danger line before the source
-        # is "controlled". Without this, mitigation pulls methane back under 1.5
-        # within a tick or two and the red state is too brief to see or alarm on;
-        # the overshoot keeps the zone clearly red for several seconds.
-        self._peak_level = settings.methane_danger + 0.3
+        # Drill-and-blast cycle state for the active level.
+        #   "working"  -> crew on the level, air clear, counting down to next blast
+        #   "clearing" -> blast has happened, ventilation clearing gases
+        self._phase = "working"
+        self._rest_ticks = 0
+        # Re-entry limit: air must fall below the CO warning before the crew may
+        # return. CO is the governing gas because it clears slowest.
+        self._reentry_co = settings.co_warning
 
-        # Per-zone current values, including the live fan speed. Starting methane
-        # is comfortably green and the fan starts idling.
         self._state: dict[str, dict[str, float]] = {}
-        for zone in settings.zone_list:
-            self._state[zone] = {
+        for level in settings.level_list:
+            self._state[level] = {
                 "methane": random.uniform(0.3, 0.6),
-                "co": random.uniform(5.0, 15.0),
-                "temp": random.uniform(22.0, 28.0),
+                "co": random.uniform(3.0, 12.0),
+                "co2": self._CO2_FRESH + random.uniform(0.0, 0.03),
+                "no2": random.uniform(0.0, 0.3),
+                "o2": self._O2_FRESH - random.uniform(0.0, 0.1),
+                "temp": random.uniform(22.0, 30.0),
                 "airflow": self._AIRFLOW_BASE + 0.2 * self._AIRFLOW_RANGE,
                 "fan": self.FAN_IDLE,
             }
@@ -85,92 +89,140 @@ class ZoneSimulator:
         value += random.uniform(-step, step)
         return max(low, min(high, value))
 
-    def step_zone(self, zone: str) -> GasReading:
-        """Advance one zone by a single tick and return its new reading."""
-        s = self._state[zone]
+    def step_level(self, level: str) -> GasReading:
+        """Advance one level by a single tick and return its new reading."""
+        s = self._state[level]
 
-        # CO and temperature just drift; they aren't part of the methane control
-        # loop but keep the readings feeling alive.
-        s["co"] = self._drift(s["co"], 1.5, 0.0, 40.0)
-        s["temp"] = self._drift(s["temp"], 0.3, 18.0, 38.0)
+        # Temperature and CO2 just drift gently on every level.
+        s["temp"] = self._drift(s["temp"], 0.3, 18.0, 42.0)
+        s["co2"] = self._drift(s["co2"], 0.01, self._CO2_FRESH, 2.0)
 
-        # 1) Move methane: the climbing zone has a gas source; others just hover.
-        if zone == self._climbing_zone:
-            self._step_gas_source(s)
+        if level == self._blast_level:
+            self._step_blast_cycle(s)
+            self._apply_ventilation(s)
+            # The drill-and-blast phase machine is owned by this level alone, so
+            # the re-entry check must run here and only here — never in the shared
+            # ventilation step, where another level's low CO could reset it.
+            self._check_reentry(s)
         else:
-            self._step_background_methane(s)
-
-        # 2) Run the fan control loop + airflow mitigation for every zone.
-        self._apply_fan_loop(s)
+            self._step_background(s)
+            self._apply_ventilation(s)
 
         return GasReading(
             methane=round(s["methane"], 3),
             co=round(s["co"], 1),
+            co2=round(s["co2"], 3),
+            no2=round(s["no2"], 2),
+            o2=round(s["o2"], 2),
             temp=round(s["temp"], 1),
             airflow=round(s["airflow"], 2),
             fan_speed=round(s["fan"], 1),
         )
 
-    def _step_gas_source(self, s: dict[str, float]) -> None:
-        """Add/withhold methane for the demo zone's intermittent inrush.
+    def _step_blast_cycle(self, s: dict[str, float]) -> None:
+        """Drive the active level through rest -> blast -> clearing -> rest.
 
-        While "leaking", gas pours in at the configured climb rate until the
-        zone reaches danger; at that point we consider the source controlled
-        (e.g. blasting stopped, fissure isolated) and switch to "venting" so the
-        already-ramped fan can clear the residual gas. Once cleared back to the
-        reset baseline, a new inrush begins and the arc repeats.
+        While "working" we count down a rest period, then fire a blast that loads
+        the heading with CO, NO2, a little methane and a dip in O2. We then switch
+        to "clearing"; the ventilation step pulls those gases back down. Once CO
+        is back under the re-entry limit we grant re-entry and rest again.
         """
-        noise = random.uniform(-0.005, 0.005)
-        if self._source_phase == "leaking":
-            s["methane"] = s["methane"] + self._settings.methane_climb_rate + noise
-            if s["methane"] >= self._peak_level:
-                self._source_phase = "venting"
-        else:  # venting — no new gas; mitigation in _apply_fan_loop draws it down
-            if s["methane"] <= self._reset_level:
-                self._source_phase = "leaking"
+        if self._phase == "working":
+            # Calm, working air with a touch of noise.
+            s["methane"] = self._drift(s["methane"], 0.03, 0.2, 0.7)
+            s["co"] = self._drift(s["co"], 1.5, 2.0, 15.0)
+            s["no2"] = self._drift(s["no2"], 0.1, 0.0, 0.5)
+            s["o2"] = self._drift(s["o2"], 0.05, 20.6, self._O2_FRESH)
 
-    def _step_background_methane(self, s: dict[str, float]) -> None:
-        """Keep non-climbing zones gently mean-reverting around a safe level.
+            self._rest_ticks += 1
+            rest_limit = self._settings.blast_rest_seconds / self._settings.publish_interval
+            if self._rest_ticks >= rest_limit:
+                self._fire_blast(s)
+        else:  # clearing — gases set by the blast, ventilation draws them down
+            # A small ongoing methane seep keeps the flammable channel alive while
+            # the toxic gases dominate the clearing story.
+            s["methane"] = max(0.3, s["methane"] - 0.02)
 
-        These zones have no gas source, so they should sit calmly green. We
-        mean-revert toward a low baseline with a little noise; combined with the
-        idle-fan mitigation below this settles them around ~0.5%.
+    def _fire_blast(self, s: dict[str, float]) -> None:
+        """Inject post-blast gases into the heading and start clearing."""
+        s["co"] = self._settings.blast_co_peak + random.uniform(-15.0, 15.0)
+        s["no2"] = self._settings.blast_no2_peak + random.uniform(-1.0, 1.0)
+        s["methane"] = max(s["methane"], self._settings.methane_warning + 0.2)
+        s["o2"] = 19.6  # blast fumes displace some oxygen
+        self._phase = "clearing"
+        self._rest_ticks = 0
+        logger.info("Blast fired on %s: CO=%.0f ppm, NO2=%.1f ppm", self._blast_level, s["co"], s["no2"])
+
+    def _step_background(self, s: dict[str, float]) -> None:
+        """Keep non-blast levels gently safe on fresh air."""
+        s["methane"] += (0.5 - s["methane"]) * 0.15 + random.uniform(-0.03, 0.03)
+        s["methane"] = max(0.0, s["methane"])
+        s["co"] = self._drift(s["co"], 1.2, 0.0, 15.0)
+        s["no2"] = self._drift(s["no2"], 0.05, 0.0, 0.4)
+        s["o2"] = self._drift(s["o2"], 0.03, 20.6, self._O2_FRESH)
+
+    def _hazard_present(self, s: dict[str, float]) -> bool:
+        """True if any channel is into its warning band — triggers VoD ramp."""
+        st = self._settings
+        return (
+            s["methane"] >= st.methane_warning
+            or s["co"] >= st.co_warning
+            or s["no2"] >= st.no2_warning
+            or s["co2"] >= st.co2_warning
+            or s["o2"] <= st.o2_warning
+        )
+
+    def _apply_ventilation(self, s: dict[str, float]) -> None:
+        """Ventilation-on-demand: ramp the fan on any hazard, then dilute via air.
+
+        Decide the fan response from the current air, then apply this tick's
+        airflow-driven removal. Removal scales with fan speed — full fan clears
+        fastest — and is strictly airflow-based (never oxygen enrichment).
         """
-        target = 0.55
-        s["methane"] += (target - s["methane"]) * 0.15 + random.uniform(-0.03, 0.03)
-
-    def _apply_fan_loop(self, s: dict[str, float]) -> None:
-        """Auto-mitigation: ramp the fan on elevated gas, then dilute via airflow.
-
-        Order matches the real control logic: decide the fan response from the
-        current gas level, then apply this tick's airflow-driven removal. We ramp
-        whenever methane is at or above the warning level (covers yellow and red)
-        and otherwise ease back toward idle. Mitigation removes methane in
-        proportion to fan speed — full fan clears fastest — and is strictly
-        airflow-based (never oxygen).
-        """
-        if s["methane"] >= self._settings.methane_warning:
+        if self._hazard_present(s):
             s["fan"] = min(100.0, s["fan"] + self.FAN_RAMP)
         else:
             s["fan"] = max(self.FAN_IDLE, s["fan"] - self.FAN_EASE)
 
-        removal = (s["fan"] / 100.0) * self._settings.mitigation_rate
-        s["methane"] = max(0.0, s["methane"] - removal)
+        fan_frac = s["fan"] / 100.0
+
+        # Methane: linear sweep-out proportional to airflow.
+        s["methane"] = max(0.0, s["methane"] - fan_frac * self._settings.mitigation_rate)
+
+        # Post-blast gases decay proportionally (exponential-style) with airflow.
+        clear = fan_frac * self._settings.blast_clear_rate
+        s["co"] = max(2.0, s["co"] - s["co"] * clear)
+        s["no2"] = max(0.0, s["no2"] - s["no2"] * clear)
+        s["co2"] = max(self._CO2_FRESH, s["co2"] - (s["co2"] - self._CO2_FRESH) * clear)
+
+        # Oxygen recovers toward fresh air as ventilation restores it.
+        s["o2"] = min(self._O2_FRESH, s["o2"] + (self._O2_FRESH - s["o2"]) * clear)
 
         # Airflow tracks fan speed directly: more fan, more fresh air.
-        s["airflow"] = self._AIRFLOW_BASE + (s["fan"] / 100.0) * self._AIRFLOW_RANGE
+        s["airflow"] = self._AIRFLOW_BASE + fan_frac * self._AIRFLOW_RANGE
+
+    def _check_reentry(self, s: dict[str, float]) -> None:
+        """Grant re-entry once the BLAST level's CO clears the limit.
+
+        Called only while processing the active blast level, because it mutates
+        the shared drill-and-blast phase state. Once CO is back under the re-entry
+        limit, the post-blast gases are considered cleared: re-entry is granted
+        and the cycle returns to its working/rest phase.
+        """
+        if self._phase == "clearing" and s["co"] <= self._reentry_co:
+            self._phase = "working"
+            self._rest_ticks = 0
+            logger.info("%s cleared for re-entry (CO=%.0f ppm)", self._blast_level, s["co"])
 
     def step_all(self) -> dict[str, GasReading]:
-        """Advance every zone one tick; returns {zone_id: reading}."""
-        return {zone: self.step_zone(zone) for zone in self._settings.zone_list}
+        """Advance every level one tick; returns {level_id: reading}."""
+        return {level: self.step_level(level) for level in self._settings.level_list}
 
 
 def _build_client(settings: Settings):
     """Create a paho client, tolerating both paho-mqtt 1.x and 2.x APIs."""
     import paho.mqtt.client as mqtt
 
-    # paho-mqtt 2.x requires an explicit callback API version; 1.x has no such
-    # argument. Try the 2.x signature first and fall back so either works.
     try:
         return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="mine-simulator")
     except (AttributeError, TypeError):
@@ -178,9 +230,9 @@ def _build_client(settings: Settings):
 
 
 def run_publisher(settings: Settings | None = None) -> None:
-    """Connect to the broker and publish readings for every zone forever."""
+    """Connect to the broker and publish readings for every level forever."""
     settings = settings or get_settings()
-    simulator = ZoneSimulator(settings)
+    simulator = LevelSimulator(settings)
     client = _build_client(settings)
 
     logger.info(
@@ -193,8 +245,8 @@ def run_publisher(settings: Settings | None = None) -> None:
 
     try:
         while True:
-            for zone, reading in simulator.step_all().items():
-                topic = settings.topic_for(zone)
+            for level, reading in simulator.step_all().items():
+                topic = settings.topic_for(level)
                 payload = json.dumps(reading.model_dump())
                 client.publish(topic, payload)
                 logger.debug("Published to %s: %s", topic, payload)

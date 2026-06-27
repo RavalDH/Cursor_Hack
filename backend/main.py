@@ -6,7 +6,7 @@ Everything is LOCAL and OFFLINE. No internet is used or required anywhere.
 1) Start a local MQTT broker (Mosquitto) — this stands in for the mine mesh:
      # macOS:    brew install mosquitto && mosquitto
      # Ubuntu:   sudo apt install mosquitto && mosquitto
-     # Windows:  install Mosquitto, then run `mosquitto` (or run it as a service)
+     # Windows:  install Mosquitto, then run `mosquitto`
    The broker listens on localhost:1883.
 
 2) (Optional) Copy env defaults:
@@ -15,18 +15,23 @@ Everything is LOCAL and OFFLINE. No internet is used or required anywhere.
 3) Install dependencies (ideally in a virtualenv):
      pip install -r requirements.txt
 
-4) Start the zone simulator in its own terminal (publishes readings every 1s):
+4) Start the level simulator in its own terminal (publishes readings every 1s):
      python simulator.py
 
 5) Start the API:
      uvicorn main:app --reload
-   Then open http://localhost:8000/zones , /alert , /health , and POST /ask.
+   Then open http://localhost:8000/levels , /alert , /health , and POST /ask.
 
 -----------------------------  DEMO SAFETY NET  -----------------------------
 No broker handy? Set USE_MQTT=false in .env (or the environment) and skip steps
-1 and 4 entirely. The backend then generates identical zone readings on an
-internal async timer, so /zones behaves exactly the same. The mesh is the
+1 and 4 entirely. The backend then generates identical level readings on an
+internal async timer, so /levels behaves exactly the same. The mesh is the
 *story*; MQTT is just the cleanest way to show it.
+
+----------------------------  OFFLINE HISTORIAN  ----------------------------
+Every reading and every notable event is also appended to dated JSONL files
+under ./logs (telemetry/ and events/), and the app's own log rotates daily in
+logs/app.log. That on-disk record survives restarts and is fully offline.
 =============================================================================
 """
 
@@ -38,25 +43,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import mine
 from answers import answer_question, procedure_for
 from config import Settings, get_settings
+from historian import Historian
+from logging_setup import configure_logging
 from models import (
     AlertResponse,
     AskRequest,
     AskResponse,
     HealthResponse,
+    LevelStatus,
+    LevelsResponse,
     ZonesResponse,
-    ZoneStatus,
 )
 from mqtt_client import MqttSubscriber
-from simulator import ZoneSimulator
+from simulator import LevelSimulator
 from state import StateStore
-from trend import evaluate_zone, severity_rank
+from trend import evaluate_level, severity_rank
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
 logger = logging.getLogger("mine.backend")
 
 
@@ -64,16 +69,17 @@ class AppContext:
     """Holds the long-lived objects so handlers don't reach for globals blindly.
 
     One instance is created at startup and stashed on app.state. Keeping the
-    store, settings, optional MQTT subscriber, and start time together makes the
-    two run modes (MQTT vs internal timer) easy to reason about.
+    store, settings, historian, optional MQTT subscriber and start time together
+    makes the two run modes (MQTT vs internal timer) easy to reason about.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, historian: Historian) -> None:
         self.settings = settings
-        self.store = StateStore(settings.zone_list, settings.history_size)
+        self.historian = historian
+        self.store = StateStore(settings.level_list, settings.history_size)
         self.started_at = time.time()
         self.subscriber: MqttSubscriber | None = None
-        self.simulator: ZoneSimulator | None = None
+        self.simulator: LevelSimulator | None = None
         self.timer_task: asyncio.Task | None = None
 
     @property
@@ -82,24 +88,26 @@ class AppContext:
 
 
 async def _internal_timer_loop(ctx: AppContext) -> None:
-    """Drive zones from the in-process simulator when USE_MQTT is false.
+    """Drive levels from the in-process simulator when USE_MQTT is false.
 
-    This uses the exact same ZoneSimulator the MQTT publisher uses, so /zones is
-    indistinguishable between the two modes. This is the live-demo safety net.
+    Uses the exact same LevelSimulator the MQTT publisher uses, so /levels is
+    indistinguishable between the two modes. Also mirrors each reading into the
+    historian, just like the MQTT path does.
     """
     interval = ctx.settings.publish_interval
     logger.info("Internal timer started (USE_MQTT=false), interval=%.1fs", interval)
     try:
         while True:
-            for zone, reading in ctx.simulator.step_all().items():
-                ctx.store.update(zone, reading)
+            for level, reading in ctx.simulator.step_all().items():
+                ctx.store.update(level, reading)
+                ctx.historian.log_reading(level, reading)
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("Internal timer stopped")
         raise
 
 
-app = FastAPI(title="Mine Gas Safety Edge Backend", version="1.0.0")
+app = FastAPI(title="Mine Gas Safety Edge Backend", version="2.0.0")
 
 # Wide-open CORS: the frontend is served from a separate origin (and during the
 # demo we don't know which port), so we allow all. This is an offline LAN tool,
@@ -107,9 +115,6 @@ app = FastAPI(title="Mine Gas Safety Edge Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    # Must stay False alongside allow_origins=["*"]: the CORS spec forbids the
-    # wildcard origin together with credentials. The frontend doesn't send
-    # cookies/auth, so this loses us nothing and keeps the headers valid.
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,26 +123,41 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Build state and start whichever data source the config selected."""
+    """Build state, configure offline logging, and start the data source."""
     settings = get_settings()
-    ctx = AppContext(settings)
+
+    # Offline logging first, so everything after this is captured on disk.
+    log_file = configure_logging(
+        settings.log_path, settings.log_level, settings.log_retention_days
+    )
+    historian = Historian(settings.log_path, settings.historian_enabled)
+
+    ctx = AppContext(settings, historian)
     app.state.ctx = ctx
 
     logger.info(
-        "Starting backend. Zones=%s, climbing=%s, USE_MQTT=%s",
-        settings.zone_list,
-        settings.climbing_zone,
+        "Starting %s backend. Levels=%s, blast level=%s, USE_MQTT=%s, log=%s",
+        mine.MINE_NAME,
+        settings.level_list,
+        settings.active_blast_level,
         settings.use_mqtt,
+        log_file,
+    )
+    historian.log_event(
+        "startup",
+        mine=mine.MINE_NAME,
+        levels=settings.level_list,
+        use_mqtt=settings.use_mqtt,
     )
 
     if settings.use_mqtt:
         # Real path: subscribe to the broker. If it's down, start() logs a
         # warning and returns; the app still serves existing state.
-        ctx.subscriber = MqttSubscriber(settings, ctx.store)
+        ctx.subscriber = MqttSubscriber(settings, ctx.store, historian)
         ctx.subscriber.start()
     else:
         # Fallback path: generate readings ourselves on an async timer.
-        ctx.simulator = ZoneSimulator(settings)
+        ctx.simulator = LevelSimulator(settings)
         ctx.timer_task = asyncio.create_task(_internal_timer_loop(ctx))
 
 
@@ -153,43 +173,69 @@ async def on_shutdown() -> None:
             await ctx.timer_task
         except asyncio.CancelledError:
             pass
+    ctx.historian.log_event("shutdown", uptime_seconds=round(time.time() - ctx.started_at, 1))
     logger.info("Backend shut down")
 
 
-def _current_zone_statuses(ctx: AppContext) -> list[ZoneStatus]:
-    """Compute the status/trend for every zone that has data.
+def _current_level_statuses(ctx: AppContext) -> list[LevelStatus]:
+    """Compute the status/trend for every level that has data.
 
-    Side effect: records each zone's status in the store so red->green
-    recoveries are detected. Both /zones and /alert call this, and the frontend
-    polls /zones every couple of seconds, so transitions are caught reliably.
+    Side effect: records each level's status in the store and writes an event to
+    the historian whenever a level's status changes (e.g. green->yellow->red and
+    back). Both /levels and /alert call this, and the frontend polls /levels
+    every couple of seconds, so transitions are caught reliably.
     """
-    statuses: list[ZoneStatus] = []
-    for zone_id in ctx.store.all_zone_ids():
-        history = ctx.store.get_history(zone_id)
-        zone_status = evaluate_zone(zone_id, history, ctx.settings)
-        if zone_status is not None:
-            statuses.append(zone_status)
-            ctx.store.note_status(zone_id, zone_status.status)
+    statuses: list[LevelStatus] = []
+    for level_id in ctx.store.all_level_ids():
+        history = ctx.store.get_history(level_id)
+        level_status = evaluate_level(level_id, history, ctx.settings)
+        if level_status is None:
+            continue
+        statuses.append(level_status)
+        transition = ctx.store.note_status(level_id, level_status.status)
+        if transition is not None:
+            old, new = transition
+            ctx.historian.log_event(
+                "status_change",
+                level_id=level_id,
+                **{
+                    "from": old,
+                    "to": new,
+                    "metric": level_status.metric,
+                    "methane": level_status.methane,
+                    "co": level_status.co,
+                },
+            )
     return statuses
 
 
-def _zone_label(zone_id: str) -> str:
-    """Turn 'zone3' into a spoken-friendly 'Zone 3' for the all-clear message."""
-    if zone_id.lower().startswith("zone") and zone_id[4:].isdigit():
-        return f"Zone {zone_id[4:]}"
-    return zone_id
+@app.get("/levels", response_model=LevelsResponse)
+async def get_levels() -> LevelsResponse:
+    """Return the latest computed status for every level.
+
+    Works from whatever is already in state, so it keeps responding even if the
+    broker is unreachable — the graceful-degradation requirement.
+    """
+    try:
+        ctx: AppContext = app.state.ctx
+        return LevelsResponse(mine=mine.MINE_NAME, levels=_current_level_statuses(ctx))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error building /levels response")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to read levels", "detail": str(exc)},
+        )
 
 
 @app.get("/zones", response_model=ZonesResponse)
 async def get_zones() -> ZonesResponse:
-    """Return the latest computed status for every zone.
+    """Deprecated alias for /levels, kept so an existing UI polling /zones works.
 
-    Works from whatever is already in state, so it keeps responding even if the
-    broker is unreachable — that's the graceful-degradation requirement.
+    Returns the identical level objects under the legacy "zones" key.
     """
     try:
         ctx: AppContext = app.state.ctx
-        return ZonesResponse(zones=_current_zone_statuses(ctx))
+        return ZonesResponse(zones=_current_level_statuses(ctx))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error building /zones response")
         return JSONResponse(
@@ -200,50 +246,59 @@ async def get_zones() -> ZonesResponse:
 
 @app.get("/alert", response_model=AlertResponse)
 async def get_alert() -> AlertResponse:
-    """Return the single highest-severity zone needing action, if any.
+    """Return the single highest-severity level needing action, if any.
 
-    Fires when a zone is red, or yellow-and-rising (the early-warning case). The
+    Fires when a level is red, or yellow-and-rising (the early-warning case). The
     response carries the exact procedure and a Reg 854 citation so the frontend
     can speak/show it directly.
     """
     try:
         ctx: AppContext = app.state.ctx
-        statuses = _current_zone_statuses(ctx)
+        statuses = _current_level_statuses(ctx)
         if not statuses:
             return AlertResponse(alert=False)
 
         worst = max(statuses, key=severity_rank)
 
-        # Alert only on genuine concern: red, or a yellow that's actively rising.
         fires = worst.status == "red" or (
             worst.status == "yellow" and worst.trend == "rising"
         )
         if not fires:
-            # Nothing alarming right now. But if a zone just came back from red
-            # to green, give an explicit "all clear" so the demo's voice line
-            # has something reassuring to say instead of falling silent.
-            recovered_zone = ctx.store.recent_recovery()
-            if recovered_zone is not None:
-                label = _zone_label(recovered_zone)
+            # Nothing alarming. If a level just recovered red->green, give an
+            # explicit "all clear" so the demo's voice has something reassuring
+            # to say instead of falling silent.
+            recovered_level = ctx.store.recent_recovery()
+            if recovered_level is not None:
+                info = mine.describe(recovered_level)
                 return AlertResponse(
                     alert=False,
                     recovered=True,
-                    recovered_zone=recovered_zone,
+                    recovered_zone=recovered_level,
                     message=(
-                        f"{label} stabilized. Ventilation restored airflow. "
-                        "Everything is under control now."
+                        f"{info.name} stabilized. Ventilation restored airflow "
+                        "and the air has cleared. Re-entry granted."
                     ),
                 )
             return AlertResponse(alert=False)
 
-        # Methane is the driver of the demo trend; report it as the metric.
-        answer, citations = procedure_for("methane", worst.status, ctx.settings)
+        # Report the gas actually driving the level's status (CO right after a
+        # blast, methane for a seep, etc.).
+        metric = worst.metric if worst.metric != "none" else "methane"
+        answer, citations = procedure_for(metric, worst.status, ctx.settings)
+        value, threshold = _metric_value_threshold(worst, metric, ctx.settings)
+
+        ctx.historian.log_event(
+            "alert", level_id=worst.id, metric=metric, status=worst.status, value=value
+        )
         return AlertResponse(
             alert=True,
+            level=worst.id,
             zone=worst.id,
-            metric="methane",
-            value=worst.methane,
-            threshold=ctx.settings.methane_danger,
+            name=worst.name,
+            depth_m=worst.depth_m,
+            metric=metric,
+            value=value,
+            threshold=threshold,
             trend=worst.trend,
             answer=answer,
             citations=citations,
@@ -256,13 +311,21 @@ async def get_alert() -> AlertResponse:
         )
 
 
+def _metric_value_threshold(level: LevelStatus, metric: str, settings: Settings) -> tuple[float, float]:
+    """The current value and danger threshold for the gas driving an alert."""
+    table = {
+        "methane": (level.methane, settings.methane_danger),
+        "co": (level.co, settings.co_danger),
+        "no2": (level.no2, settings.no2_danger),
+        "co2": (level.co2, settings.co2_danger),
+        "o2": (level.o2, settings.o2_danger),
+    }
+    return table.get(metric, (level.methane, settings.methane_danger))
+
+
 @app.post("/ask", response_model=AskResponse)
 async def post_ask(request: AskRequest) -> AskResponse:
-    """Answer a free-text safety question from local docs (template, no LLM).
-
-    AskRequest validation means an empty/missing question already returns 422
-    before we get here, satisfying the malformed-input requirement.
-    """
+    """Answer a free-text safety question from local docs (template, no LLM)."""
     try:
         answer, citations = answer_question(request.question)
         return AskResponse(answer=answer, citations=citations)
@@ -281,8 +344,10 @@ async def get_health() -> HealthResponse:
         ctx: AppContext = app.state.ctx
         return HealthResponse(
             status="ok",
+            mine=mine.MINE_NAME,
             mqtt_connected=ctx.mqtt_connected,
-            zones_tracked=ctx.store.zones_with_data(),
+            levels_tracked=ctx.store.levels_with_data(),
+            historian_enabled=ctx.historian.enabled,
             uptime_seconds=round(time.time() - ctx.started_at, 1),
         )
     except Exception as exc:  # noqa: BLE001

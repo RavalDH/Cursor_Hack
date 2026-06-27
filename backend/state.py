@@ -1,10 +1,13 @@
-"""Thread-safe in-memory store of the latest readings per zone.
+"""Thread-safe in-memory store of the latest readings per level.
+
+This is the "right now" view. Durability lives in the historian (historian.py),
+which writes every reading and event to disk; this store stays in memory because
+at the edge, answering "what is the air doing this second?" must be instant and
+must never block on I/O.
 
 Why thread-safe: in MQTT mode the paho client runs its network loop on a
 background thread and writes readings here, while FastAPI handlers read from here
-on the request thread. Without a lock, the API could read a half-updated zone.
-The store is intentionally in-memory only — there is no database, because at the
-edge underground we care about *now*, and simplicity means fewer things to fail.
+on the request thread. Without a lock, the API could read a half-updated level.
 """
 
 import threading
@@ -14,19 +17,21 @@ from collections import deque
 from models import GasReading
 
 
-class ZoneState:
-    """Holds a bounded history of readings for a single zone."""
+class LevelState:
+    """Holds a bounded history of readings for a single level."""
 
-    def __init__(self, zone_id: str, history_size: int) -> None:
-        self.zone_id = zone_id
+    def __init__(self, level_id: str, history_size: int) -> None:
+        self.level_id = level_id
         # A deque with maxlen automatically drops the oldest reading, so we keep
         # exactly the last N without any manual trimming.
         self.readings: deque[GasReading] = deque(maxlen=history_size)
         self.last_update: float | None = None
+        # Last classified status, for detecting transitions (for the event log).
+        self.last_status: str | None = None
         # Recovery tracking for the "all clear" message on /alert. We latch
-        # `was_red` while a zone is red and clear it on the return to green —
-        # because a recovering zone physically passes back through yellow, so a
-        # strict red->green adjacency check would almost never fire.
+        # `was_red` while a level is red and clear it on the return to green —
+        # a recovering level passes back through yellow, so a strict red->green
+        # adjacency check would almost never fire.
         self.was_red: bool = False
         self.recovered_at: float | None = None
 
@@ -40,67 +45,67 @@ class ZoneState:
 
 
 class StateStore:
-    """Central, lock-guarded store for all zones.
+    """Central, lock-guarded store for all levels."""
 
-    All mutation and reads go through the same lock. The critical sections are
-    tiny (append to a deque, copy a list) so contention is a non-issue, and we
-    get correctness for free.
-    """
-
-    def __init__(self, zone_ids: list[str], history_size: int) -> None:
+    def __init__(self, level_ids: list[str], history_size: int) -> None:
         self._lock = threading.Lock()
         self._history_size = history_size
-        self._zones: dict[str, ZoneState] = {
-            zid: ZoneState(zid, history_size) for zid in zone_ids
+        self._levels: dict[str, LevelState] = {
+            lid: LevelState(lid, history_size) for lid in level_ids
         }
 
-    def update(self, zone_id: str, reading: GasReading) -> None:
-        """Record a new reading for a zone (called by the MQTT/timer writer)."""
+    def update(self, level_id: str, reading: GasReading) -> None:
+        """Record a new reading for a level (called by the MQTT/timer writer)."""
         with self._lock:
-            # Tolerate readings for a zone we weren't told about at startup so a
+            # Tolerate readings for a level we weren't told about at startup so a
             # new sensor coming online on the mesh doesn't get dropped.
-            if zone_id not in self._zones:
-                self._zones[zone_id] = ZoneState(zone_id, self._history_size)
-            self._zones[zone_id].add(reading)
+            if level_id not in self._levels:
+                self._levels[level_id] = LevelState(level_id, self._history_size)
+            self._levels[level_id].add(reading)
 
-    def get_history(self, zone_id: str) -> list[GasReading]:
-        """Return a snapshot copy of one zone's readings (oldest -> newest)."""
+    def get_history(self, level_id: str) -> list[GasReading]:
+        """Return a snapshot copy of one level's readings (oldest -> newest)."""
         with self._lock:
-            zone = self._zones.get(zone_id)
-            return list(zone.readings) if zone else []
+            level = self._levels.get(level_id)
+            return list(level.readings) if level else []
 
-    def note_status(self, zone_id: str, status: str) -> None:
-        """Record a zone's status and timestamp when it recovers to green.
+    def note_status(self, level_id: str, status: str) -> tuple[str, str] | None:
+        """Record a level's status; return (old, new) if it changed, else None.
 
-        We latch `was_red` while the zone is red, then stamp recovered_at the
-        moment it next reaches green (having passed back down through yellow).
-        Idempotent across repeated polls: once cleared, a zone that simply stays
-        green won't keep looking freshly recovered.
+        Also maintains the red->green recovery latch used for the all-clear
+        message. The returned transition lets the caller write an event record.
         """
         with self._lock:
-            zone = self._zones.get(zone_id)
-            if zone is None:
-                return
+            level = self._levels.get(level_id)
+            if level is None:
+                return None
+
+            old = level.last_status
+            transition = (old, status) if old is not None and old != status else None
+            level.last_status = status
+
             if status == "red":
-                zone.was_red = True
-            elif status == "green" and zone.was_red:
-                zone.recovered_at = time.time()
-                zone.was_red = False
+                level.was_red = True
+            elif status == "green" and level.was_red:
+                level.recovered_at = time.time()
+                level.was_red = False
+
+            return transition
 
     def recent_recovery(self, window_seconds: float = 5.0) -> str | None:
-        """Return a zone id that recovered red->green within the window, if any."""
+        """Return a level id that recovered red->green within the window, if any."""
         with self._lock:
             now = time.time()
-            for zone in self._zones.values():
-                if zone.recovered_at and now - zone.recovered_at <= window_seconds:
-                    return zone.zone_id
+            for level in self._levels.values():
+                if level.recovered_at and now - level.recovered_at <= window_seconds:
+                    return level.level_id
             return None
 
-    def all_zone_ids(self) -> list[str]:
+    def all_level_ids(self) -> list[str]:
         with self._lock:
-            return list(self._zones.keys())
+            return list(self._levels.keys())
 
-    def zones_with_data(self) -> int:
-        """How many zones have at least one reading — used by /health."""
+    def levels_with_data(self) -> int:
+        """How many levels have at least one reading — used by /health."""
         with self._lock:
-            return sum(1 for z in self._zones.values() if z.readings)
+            return sum(1 for lvl in self._levels.values() if lvl.readings)
