@@ -1,11 +1,8 @@
-"""Template Reg 854 procedures — fully offline, NO LLM.
+"""Template Reg 854 procedures — fully offline, no LLM.
 
-Every answer here is a fixed, human-written sentence mapped to a (gas type +
-severity) pair, paired with a citation whose *text* is pulled live from the
-matching local .txt file. This is the PLAN's deliberate choice (section 5):
-template answers are instant, reliable, and never hallucinate — which is the
-only acceptable behaviour for safety guidance. A wrong "creative" answer
-underground could get someone killed.
+Fixed human-written answers keyed by (gas, severity), each with a citation
+pulled from the local docs. Templates never hallucinate, which is the only
+acceptable behaviour for safety guidance.
 """
 
 import logging
@@ -25,8 +22,7 @@ _METRIC_DOC = {
     "co2": "reg854_ventilation.txt",
 }
 
-# Fixed procedure text per (metric, status). Written in plain imperative voice
-# because in an alert the crew needs an action, not a paragraph.
+# Fixed procedure text per (metric, status) — imperative; an alert needs an action.
 _PROCEDURES: dict[tuple[str, Status], str] = {
     ("methane", "yellow"): (
         "Methane is elevated and climbing in this zone. Notify the supervisor, "
@@ -89,11 +85,7 @@ _SNIPPET_KEYWORDS: dict[tuple[str, Status], str] = {
 def procedure_for(
     metric: str, status: Status, settings: Settings
 ) -> tuple[str, list[Citation]]:
-    """Return the fixed procedure + citation for a metric at a given severity.
-
-    Used by GET /alert. Falls back gracefully if a doc is missing so an alert
-    still carries useful text even if the citation can't be loaded.
-    """
+    """Fixed procedure + citation for a (metric, status). Used by /alert; degrades if a doc is missing."""
     answer = _PROCEDURES.get(
         (metric, status),
         "Monitor the zone, notify the supervisor, and follow the site's "
@@ -114,8 +106,7 @@ def procedure_for(
     return answer, citations
 
 
-# Keyword -> canned guidance for the free-text /ask endpoint. Order matters:
-# the first topic whose keyword appears in the question wins.
+# Keyword -> canned guidance for /ask. Order matters: first keyword match wins.
 _ASK_TOPICS: list[tuple[tuple[str, ...], str]] = [
     (
         ("methane", "ch4", "flammable", "explosive"),
@@ -176,12 +167,7 @@ _ASK_TOPICS: list[tuple[tuple[str, ...], str]] = [
 
 
 def answer_question(question: str) -> tuple[str, list[Citation]]:
-    """Answer a free-text question with a template + retrieved citations.
-
-    Strategy: pick a canned answer by topic keyword (deterministic and safe),
-    and attach citations from the keyword search over docs/ so the user can see
-    the regulation the answer rests on.
-    """
+    """Free-text answer: canned text by topic keyword, plus citations from docs/."""
     lowered = question.lower()
     answer = (
         "Follow the site's gas-control and ventilation procedures and notify "

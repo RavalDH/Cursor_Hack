@@ -1,26 +1,13 @@
-"""Simulated per-level sensor readings, modelled on a real drill-and-blast cycle.
+"""Simulated per-level sensor readings, modelled on a drill-and-blast cycle.
 
-Two jobs in one file:
-  1. The standalone publisher (`python simulator.py`) that pushes readings to the
-     local MQTT broker, standing in for the real sensor stations on each level.
-  2. The reusable generation logic (`LevelSimulator`), imported by main.py so the
-     USE_MQTT=false internal-timer fallback produces *identical* readings without
-     a broker. Sharing the logic is what makes the two modes indistinguishable at
-     the /levels output — the demo's safety net.
+Two jobs:
+  1. Standalone publisher (`python simulator.py`) pushing readings to MQTT.
+  2. `LevelSimulator`, imported by main.py so the USE_MQTT=false timer produces
+     identical readings without a broker.
 
-What it models (and why it reads like a mine):
-  * Every level reports a full multi-gas picture: CH4, CO, CO2, NO2, O2, plus
-    airflow and temperature — what a real fixed environmental station heads up.
-  * The active production level runs the **drill-and-blast cycle**: a blast fills
-    the heading with carbon monoxide and nitrogen dioxide (and a little methane),
-    oxygen dips, and then **ventilation-on-demand** ramps the fan to clear the
-    gases. CO clears slowest, so CO is what governs **re-entry** — exactly as in
-    practice. Once the air is below the re-entry limit, the cycle rests and then
-    blasts again, so the full "blast -> clearing -> re-entry -> safe" arc plays
-    on a loop for the demo.
-  * Other levels sit safely on fresh air with gentle sensor noise.
-
-The numbers are tuned to be watchable in seconds, not physically rigorous.
+The active level loops blast -> clear -> re-entry: a blast loads CO/NO2, the fan
+ramps (ventilation-on-demand) to clear it, and CO (slowest to clear) governs
+re-entry. Other levels sit on fresh air. Numbers tuned to be watchable in seconds.
 """
 
 import json
@@ -35,26 +22,21 @@ logger = logging.getLogger(__name__)
 
 
 class LevelSimulator:
-    """Generates a stream of realistic multi-gas readings for all levels.
+    """Generates multi-gas readings for all levels.
 
-    Ventilation is a closed loop: as any hazardous gas builds, the fan ramps to
-    push more fresh air through the level, which dilutes and sweeps the gas out;
-    as the air clears, the fan eases back to an idle baseline to save energy
-    (this is ventilation-on-demand). The only mitigation lever is airflow — we
-    never enrich oxygen, because more oxygen underground raises explosion risk.
+    Closed-loop ventilation-on-demand: the fan ramps as gas builds and eases as
+    the air clears. Airflow is the only lever — never O2 enrichment, which raises
+    explosion risk.
     """
 
-    # Fan dynamics (percent of full speed). Idle is a non-zero baseline because a
-    # level always gets *some* fresh air; ramp is faster than ease so the system
-    # reacts hard to danger but powers down gently.
+    # Fan dynamics (% of full speed); ramp faster than ease so it reacts hard.
     FAN_IDLE = 20.0
     FAN_RAMP = 18.0  # +%/tick while a hazard is present
     FAN_EASE = 10.0  # -%/tick once the level is clear
-    # Airflow (m^3/s) is a direct function of fan speed.
     _AIRFLOW_BASE = 3.0
     _AIRFLOW_RANGE = 6.0
 
-    # Fresh-air baselines for the non-flammable channels.
+    # Fresh-air baselines.
     _O2_FRESH = 20.9
     _CO2_FRESH = 0.04
 
@@ -62,13 +44,11 @@ class LevelSimulator:
         self._settings = settings
         self._blast_level = settings.active_blast_level
 
-        # Drill-and-blast cycle state for the active level.
-        #   "working"  -> crew on the level, air clear, counting down to next blast
-        #   "clearing" -> blast has happened, ventilation clearing gases
+        # Blast-cycle state for the active level: "working" (counting to next
+        # blast) or "clearing" (venting post-blast gases).
         self._phase = "working"
         self._rest_ticks = 0
-        # Re-entry limit: air must fall below the CO warning before the crew may
-        # return. CO is the governing gas because it clears slowest.
+        # CO must fall below this before re-entry (CO clears slowest).
         self._reentry_co = settings.co_warning
 
         self._state: dict[str, dict[str, float]] = {}
@@ -93,16 +73,14 @@ class LevelSimulator:
         """Advance one level by a single tick and return its new reading."""
         s = self._state[level]
 
-        # Temperature and CO2 just drift gently on every level.
+        # Temp and CO2 just drift gently on every level.
         s["temp"] = self._drift(s["temp"], 0.3, 18.0, 42.0)
         s["co2"] = self._drift(s["co2"], 0.01, self._CO2_FRESH, 2.0)
 
         if level == self._blast_level:
             self._step_blast_cycle(s)
             self._apply_ventilation(s)
-            # The drill-and-blast phase machine is owned by this level alone, so
-            # the re-entry check must run here and only here — never in the shared
-            # ventilation step, where another level's low CO could reset it.
+            # Re-entry check belongs here only — it mutates the shared phase state.
             self._check_reentry(s)
         else:
             self._step_background(s)
@@ -120,15 +98,9 @@ class LevelSimulator:
         )
 
     def _step_blast_cycle(self, s: dict[str, float]) -> None:
-        """Drive the active level through rest -> blast -> clearing -> rest.
-
-        While "working" we count down a rest period, then fire a blast that loads
-        the heading with CO, NO2, a little methane and a dip in O2. We then switch
-        to "clearing"; the ventilation step pulls those gases back down. Once CO
-        is back under the re-entry limit we grant re-entry and rest again.
-        """
+        """Run the active level: rest -> blast -> clearing -> rest."""
         if self._phase == "working":
-            # Calm, working air with a touch of noise.
+            # Calm working air with a touch of noise.
             s["methane"] = self._drift(s["methane"], 0.03, 0.2, 0.7)
             s["co"] = self._drift(s["co"], 1.5, 2.0, 15.0)
             s["no2"] = self._drift(s["no2"], 0.1, 0.0, 0.5)
@@ -138,9 +110,7 @@ class LevelSimulator:
             rest_limit = self._settings.blast_rest_seconds / self._settings.publish_interval
             if self._rest_ticks >= rest_limit:
                 self._fire_blast(s)
-        else:  # clearing — gases set by the blast, ventilation draws them down
-            # A small ongoing methane seep keeps the flammable channel alive while
-            # the toxic gases dominate the clearing story.
+        else:  # clearing: a small methane seep keeps the flammable channel alive
             s["methane"] = max(0.3, s["methane"] - 0.02)
 
     def _fire_blast(self, s: dict[str, float]) -> None:
@@ -148,7 +118,7 @@ class LevelSimulator:
         s["co"] = self._settings.blast_co_peak + random.uniform(-15.0, 15.0)
         s["no2"] = self._settings.blast_no2_peak + random.uniform(-1.0, 1.0)
         s["methane"] = max(s["methane"], self._settings.methane_warning + 0.2)
-        s["o2"] = 19.6  # blast fumes displace some oxygen
+        s["o2"] = 19.6  # fumes displace some oxygen
         self._phase = "clearing"
         self._rest_ticks = 0
         logger.info("Blast fired on %s: CO=%.0f ppm, NO2=%.1f ppm", self._blast_level, s["co"], s["no2"])
@@ -173,12 +143,7 @@ class LevelSimulator:
         )
 
     def _apply_ventilation(self, s: dict[str, float]) -> None:
-        """Ventilation-on-demand: ramp the fan on any hazard, then dilute via air.
-
-        Decide the fan response from the current air, then apply this tick's
-        airflow-driven removal. Removal scales with fan speed — full fan clears
-        fastest — and is strictly airflow-based (never oxygen enrichment).
-        """
+        """Ramp the fan on any hazard, then remove gas proportional to airflow."""
         if self._hazard_present(s):
             s["fan"] = min(100.0, s["fan"] + self.FAN_RAMP)
         else:
@@ -186,29 +151,22 @@ class LevelSimulator:
 
         fan_frac = s["fan"] / 100.0
 
-        # Methane: linear sweep-out proportional to airflow.
+        # Methane: linear sweep-out with airflow.
         s["methane"] = max(0.0, s["methane"] - fan_frac * self._settings.mitigation_rate)
 
-        # Post-blast gases decay proportionally (exponential-style) with airflow.
+        # Post-blast gases decay proportionally with airflow.
         clear = fan_frac * self._settings.blast_clear_rate
         s["co"] = max(2.0, s["co"] - s["co"] * clear)
         s["no2"] = max(0.0, s["no2"] - s["no2"] * clear)
         s["co2"] = max(self._CO2_FRESH, s["co2"] - (s["co2"] - self._CO2_FRESH) * clear)
 
-        # Oxygen recovers toward fresh air as ventilation restores it.
+        # Oxygen recovers toward fresh air.
         s["o2"] = min(self._O2_FRESH, s["o2"] + (self._O2_FRESH - s["o2"]) * clear)
 
-        # Airflow tracks fan speed directly: more fan, more fresh air.
         s["airflow"] = self._AIRFLOW_BASE + fan_frac * self._AIRFLOW_RANGE
 
     def _check_reentry(self, s: dict[str, float]) -> None:
-        """Grant re-entry once the BLAST level's CO clears the limit.
-
-        Called only while processing the active blast level, because it mutates
-        the shared drill-and-blast phase state. Once CO is back under the re-entry
-        limit, the post-blast gases are considered cleared: re-entry is granted
-        and the cycle returns to its working/rest phase.
-        """
+        """Once the blast level's CO clears the limit, grant re-entry and rest again."""
         if self._phase == "clearing" and s["co"] <= self._reentry_co:
             self._phase = "working"
             self._rest_ticks = 0

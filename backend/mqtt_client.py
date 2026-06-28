@@ -1,16 +1,8 @@
-"""MQTT subscriber: bridges the local broker (the 'mesh') into our state store.
+"""MQTT subscriber: bridges the broker (the "mesh") into the state store.
 
-This runs paho's network loop on a background thread. It subscribes to every
-level's gas topic, validates each payload, writes good readings into the shared
-StateStore, and mirrors them into the offline historian. Two hard rules live
-here:
-
-  * A malformed payload must NEVER crash the subscriber — log a warning, skip it,
-    keep listening. Underground, one flaky sensor cannot take down monitoring for
-    the whole mine.
-  * The app must keep running even if the broker is unreachable. We connect with
-    auto-reconnect and let paho handle a broker that comes up later, so /levels
-    still serves whatever state we already have.
+Runs paho's loop on a background thread. Two hard rules: a bad payload is logged
+and skipped (never crashes the subscriber), and an unreachable broker never
+stops the app — paho reconnects and /levels keeps serving existing state.
 """
 
 import json
@@ -51,12 +43,7 @@ class MqttSubscriber:
     # --- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
-        """Attempt to connect and start the background loop.
-
-        Failure to reach the broker is logged and swallowed: the rest of the app
-        must come up regardless (graceful degradation). paho keeps retrying the
-        connection on its own thread once loop_start is running.
-        """
+        """Connect and start the loop. A failed connect is logged, not fatal — paho keeps retrying."""
         host, port = self._settings.mqtt_host, self._settings.mqtt_port
         try:
             logger.info("Connecting to MQTT broker at %s:%s", host, port)
@@ -84,8 +71,7 @@ class MqttSubscriber:
         """Subscribe to all level topics once connected."""
         self.connected = True
         topic = f"{self._settings.mqtt_base_topic}/+/gas"
-        # A single wildcard subscription covers every level, including levels that
-        # join the mesh later — we don't have to know the level list up front.
+        # One wildcard sub covers every level, including ones that join later.
         client.subscribe(topic)
         logger.info("MQTT connected; subscribed to %s", topic)
 
@@ -103,7 +89,7 @@ class MqttSubscriber:
                 return
 
             payload = json.loads(msg.payload.decode("utf-8"))
-            # Pydantic validates types here; a bad payload raises and is caught.
+            # Pydantic validates here; a bad payload raises and is caught below.
             reading = GasReading(**payload)
             self._store.update(level_id, reading)
             if self._historian is not None:

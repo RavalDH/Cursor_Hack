@@ -1,13 +1,7 @@
 """Thread-safe in-memory store of the latest readings per level.
 
-This is the "right now" view. Durability lives in the historian (historian.py),
-which writes every reading and event to disk; this store stays in memory because
-at the edge, answering "what is the air doing this second?" must be instant and
-must never block on I/O.
-
-Why thread-safe: in MQTT mode the paho client runs its network loop on a
-background thread and writes readings here, while FastAPI handlers read from here
-on the request thread. Without a lock, the API could read a half-updated level.
+The "right now" view; durability lives in historian.py. Locked because in MQTT
+mode paho writes from its network thread while request handlers read here.
 """
 
 import threading
@@ -22,16 +16,14 @@ class LevelState:
 
     def __init__(self, level_id: str, history_size: int) -> None:
         self.level_id = level_id
-        # A deque with maxlen automatically drops the oldest reading, so we keep
-        # exactly the last N without any manual trimming.
+        # maxlen deque keeps exactly the last N readings, no manual trimming.
         self.readings: deque[GasReading] = deque(maxlen=history_size)
         self.last_update: float | None = None
-        # Last classified status, for detecting transitions (for the event log).
+        # Last status, for detecting transitions in the event log.
         self.last_status: str | None = None
-        # Recovery tracking for the "all clear" message on /alert. We latch
-        # `was_red` while a level is red and clear it on the return to green —
-        # a recovering level passes back through yellow, so a strict red->green
-        # adjacency check would almost never fire.
+        # Recovery latch for the all-clear: set on red, cleared on the return to
+        # green. (A recovering level passes back through yellow, so a strict
+        # red->green adjacency check would rarely fire.)
         self.was_red: bool = False
         self.recovered_at: float | None = None
 
@@ -57,8 +49,7 @@ class StateStore:
     def update(self, level_id: str, reading: GasReading) -> None:
         """Record a new reading for a level (called by the MQTT/timer writer)."""
         with self._lock:
-            # Tolerate readings for a level we weren't told about at startup so a
-            # new sensor coming online on the mesh doesn't get dropped.
+            # Accept a level we didn't know at startup (new sensor on the mesh).
             if level_id not in self._levels:
                 self._levels[level_id] = LevelState(level_id, self._history_size)
             self._levels[level_id].add(reading)
@@ -70,11 +61,7 @@ class StateStore:
             return list(level.readings) if level else []
 
     def note_status(self, level_id: str, status: str) -> tuple[str, str] | None:
-        """Record a level's status; return (old, new) if it changed, else None.
-
-        Also maintains the red->green recovery latch used for the all-clear
-        message. The returned transition lets the caller write an event record.
-        """
+        """Record status; return (old, new) on change, else None. Maintains the recovery latch."""
         with self._lock:
             level = self._levels.get(level_id)
             if level is None:

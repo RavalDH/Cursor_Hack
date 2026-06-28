@@ -1,19 +1,9 @@
 """The mine model — the physical layout the rest of the system reasons about.
 
-Real underground mines are not divided into abstract "zones"; they are divided
-into **levels**: horizontal working horizons driven off the shaft/ramp at a
-fixed depth below surface, named after that depth (e.g. the "1200 Level" sits
-~1200 m down). Levels are connected vertically by the shaft and raises and by an
-inclined ramp, and air is pushed down *intake* airways, swept across the working
-levels, and pulled out through *return* airways.
-
-This module is the single source of truth for that layout. Keeping it separate
-from config.py means the mine's shape (how many levels, how deep, what each one
-is doing) is described in one obvious place, the way a ventilation engineer would
-sketch it, rather than being smeared across the simulator and the API.
-
-Nothing here is copied from any vendor's product — it's a deliberately small,
-generic hard-rock layout built only to make the demo behave like a real mine.
+Real mines are divided into *levels* (working horizons at a fixed depth), not
+abstract zones. Air is pushed down intake airways, across the working levels,
+and out the return. Single source of truth for the layout; a small generic
+hard-rock mine, not copied from any product.
 """
 
 from __future__ import annotations
@@ -24,29 +14,17 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Level:
-    """One working horizon of the mine.
-
-    depth_m       metres below the collar (surface). Levels are named by depth,
-                  so id "1200L" is the 1200 m level.
-    name          human label spoken/shown in the UI ("1200 Level").
-    area          what is physically happening on this level right now — this is
-                  what makes the demo read like a mine instead of a dashboard.
-    airway        the level's role in the ventilation circuit. Fresh air enters
-                  on an "intake" level, does work on a "working" level, and
-                  leaves via a "return" level. Gas naturally rides toward return.
-    """
+    """One working horizon of the mine."""
 
     id: str
-    depth_m: int
+    depth_m: int  # metres below surface; levels are named by depth ("1200L")
     name: str
-    area: str
-    airway: str  # "intake" | "working" | "return"
+    area: str  # what's happening here now — makes it read like a mine
+    airway: str  # ventilation role: "intake" | "working" | "return"
 
 
-# A compact, realistic hard-rock layout: four levels on ~400 m spacing, one
-# fresh-air intake at the top, two working levels in the middle (one of them the
-# active production level where blasting happens), and a return airway at the
-# bottom that carries spent air back to surface.
+# Four levels on ~400 m spacing: intake on top, two working (one blasts), return
+# at the bottom.
 MINE_NAME = "North Range Mine"
 
 MINE_LEVELS: list[Level] = [
@@ -80,9 +58,7 @@ MINE_LEVELS: list[Level] = [
     ),
 ]
 
-# The level whose air is driven by the drill-and-blast cycle: a blast there fills
-# the heading with CO/NO2, then ventilation clears it for re-entry. This is the
-# level that produces the live "blast -> clearing -> re-entry -> safe" story.
+# The level that runs the drill-and-blast cycle (the live blast->clear->re-entry story).
 ACTIVE_BLAST_LEVEL = "1200L"
 
 _BY_ID: dict[str, Level] = {lvl.id: lvl for lvl in MINE_LEVELS}
@@ -99,23 +75,13 @@ def get_level(level_id: str) -> Level | None:
 
 
 def _depth_from_id(level_id: str) -> int:
-    """Best-effort depth for an id we weren't told about up front.
-
-    A new sensor can come online on a level that isn't in the static catalog
-    (the mesh discovers it). We still want a sensible depth, so we read the
-    leading digits of the id ("950L" -> 950) and fall back to 0 if there are
-    none.
-    """
+    """Best-effort depth from the id's leading digits ("950L" -> 950), else 0."""
     match = re.match(r"\s*(\d+)", level_id)
     return int(match.group(1)) if match else 0
 
 
 def describe(level_id: str) -> Level:
-    """Return the Level for an id, synthesising a generic one if unknown.
-
-    This guarantees the API always has depth/area/airway to report, even for a
-    level that joined the mesh after startup, so the UI never shows blanks.
-    """
+    """Level for an id, synthesising a generic one if unknown, so the API never returns blanks."""
     known = _BY_ID.get(level_id)
     if known is not None:
         return known

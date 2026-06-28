@@ -1,10 +1,7 @@
-"""Offline keyword retrieval over the local Reg 854 documents.
+"""Offline keyword retrieval over the local Reg 854 docs — powers POST /ask.
 
-This powers POST /ask. There is no embedding model and no network call — just a
-keyword overlap score over a handful of local .txt files. For five short
-regulation sections that's not only enough, it's preferable: it's instant,
-deterministic, and trivially auditable, which is exactly what you want for
-safety guidance at the edge.
+No embeddings, no network: just keyword overlap over a handful of .txt files.
+For a few short sections that's instant, deterministic, and auditable.
 """
 
 import logging
@@ -19,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 DOCS_DIR = Path(__file__).parent / "docs"
 
-# Words too common to carry meaning; ignoring them keeps scoring honest so a
-# question about "methane" isn't swamped by matches on "the" or "is".
+# Common words dropped so scoring isn't swamped by "the"/"is".
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "of", "to", "in", "on", "for", "and", "or",
     "what", "when", "where", "how", "do", "i", "we", "should", "if", "at",
@@ -32,26 +28,21 @@ _STOPWORDS = {
 class Doc:
     """One loaded regulation section."""
 
-    source: str  # e.g. "O. Reg 854 s.123 — Methane ..." (first line of the file)
+    source: str  # first line of the file, the human citation label
     path: Path
     text: str
     tokens: set[str]
 
 
 def _tokenize(text: str) -> set[str]:
-    """Lowercase word set with stopwords removed — the unit of comparison."""
+    """Lowercase word set, stopwords removed — the unit of comparison."""
     words = re.findall(r"[a-z0-9]+", text.lower())
     return {w for w in words if w not in _STOPWORDS and len(w) > 1}
 
 
 @lru_cache
 def load_docs() -> list[Doc]:
-    """Load and cache all docs/*.txt.
-
-    Cached because the regulation text never changes at runtime; we pay the file
-    reads once at first use. A missing docs/ folder is logged, not fatal — the
-    rest of the system (zones, alerts) must keep working regardless.
-    """
+    """Load and cache docs/*.txt. A missing folder is logged, not fatal."""
     docs: list[Doc] = []
     if not DOCS_DIR.is_dir():
         logger.warning("docs/ directory not found at %s — /ask will be empty", DOCS_DIR)
@@ -63,7 +54,7 @@ def load_docs() -> list[Doc]:
         except OSError as exc:
             logger.warning("Could not read doc %s: %s", path.name, exc)
             continue
-        # The first non-empty line is the human-readable citation label.
+        # First non-empty line is the citation label.
         first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), path.stem)
         docs.append(Doc(source=first_line, path=path, text=text, tokens=_tokenize(text)))
 
@@ -72,19 +63,12 @@ def load_docs() -> list[Doc]:
 
 
 def _best_snippet(question_tokens: set[str], text: str) -> str:
-    """Pick the most relevant paragraph from a doc to quote as the citation.
-
-    We score each paragraph by how many question words it contains and return
-    the best one, so the citation shown is the part that actually answers the
-    question rather than the file's header.
-    """
+    """Pick the paragraph with the most question-word overlap to quote as the citation."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     if not paragraphs:
         return text.strip()
 
-    # Drop the title line (first paragraph) and the NOTE disclaimer: neither is
-    # quotable regulation text, and without this they can win on keyword overlap
-    # and leave the citation showing only a header.
+    # Skip the title and NOTE disclaimer — neither is quotable regulation text.
     candidates = [
         p for p in paragraphs[1:] if not p.lstrip().upper().startswith("NOTE:")
     ] or paragraphs
@@ -93,7 +77,7 @@ def _best_snippet(question_tokens: set[str], text: str) -> str:
         return len(question_tokens & _tokenize(paragraph))
 
     best = max(candidates, key=overlap)
-    # If nothing matched, fall back to the first substantive paragraph.
+    # Nothing matched -> first substantive paragraph.
     if overlap(best) == 0:
         return candidates[0]
     return best

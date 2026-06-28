@@ -333,7 +333,7 @@ function ZoneCard({ zone }: { zone: Zone }) {
     },
   }[zone.status];
 
-  // Map fan_speed (0-100) to spin duration: 0% -> very slow (6s), 100% -> very fast (0.25s)
+  // Faster fan -> faster spin: 0% is 6s/rev, 100% is 0.25s/rev.
   const spinDuration =
     fanSpeed <= 0 ? 0 : Math.max(0.25, 6 - (fanSpeed / 100) * 5.75);
 

@@ -1,35 +1,25 @@
 """Per-level status, multi-gas classification, trend and re-entry logic.
 
-This is the heart of the system and the differentiator: we don't wait for a gas
-to *cross* a danger line before reacting. We watch the recent history and flag a
-level that is *climbing* toward danger, so the crew can withdraw in an orderly
-way before it becomes an emergency.
-
-A real fixed monitor heads up several gases at once and alarms on the worst, so
-we classify every channel (CH4, CO, NO2, CO2, O2) and let the most severe one
-drive the level's status. The maths stays deliberately simple and explainable —
-when you justify a safety decision to a mine inspector, "the last few CO readings
-trended up and crossed the limit" beats a black-box model.
+The differentiator: we don't wait for a gas to cross a danger line, we flag a
+level that's *climbing* toward one so the crew can withdraw early. Every channel
+(CH4, CO, NO2, CO2, O2) is classified and the worst one drives the status. Kept
+deliberately simple — easy to justify to an inspector.
 """
 
 from config import Settings
 from models import GasReading, Status, Trend, LevelStatus
 import mine
 
-# Average rise (per reading) needed to count a channel as "rising". A small
-# deadband stops normal sensor noise from constantly toggling rising/stable.
+# Min average per-reading rise to count as "rising"; a deadband against noise.
 _RISING_SLOPE_EPSILON = 0.01
 
-# Fan idle baseline (matches LevelSimulator.FAN_IDLE). Above this means the fan
-# has actively ramped, i.e. the level is being mitigated right now.
+# Fan idle baseline (matches LevelSimulator.FAN_IDLE); above it = mitigating.
 _FAN_IDLE = 20.0
 
-# Order in which gases are considered when picking the one that "drives" a
-# level's status among equally-severe channels. CO and methane lead because they
-# carry the headline post-blast and flammable hazards.
+# Tie-breaker when several channels share the worst status. CO/methane lead.
 _METRIC_PRIORITY = ("co", "methane", "no2", "o2", "co2")
 
-# Human labels for the driving metric, used in actions/UI.
+# Human labels for the driving metric.
 _METRIC_LABEL = {
     "co": "carbon monoxide",
     "methane": "methane",
@@ -66,11 +56,6 @@ def _is_rising(values: list[float]) -> bool:
     return _slope(values) > _RISING_SLOPE_EPSILON
 
 
-def detect_trend(readings: list[GasReading]) -> Trend:
-    """Backward-compatible methane trend over the recent window."""
-    return "rising" if _is_rising([r.methane for r in readings]) else "stable"
-
-
 _SEVERITY = {"green": 0, "yellow": 1, "red": 2}
 
 
@@ -83,8 +68,8 @@ def _channel_statuses(latest: GasReading, methane_rising: bool, settings: Settin
         "co2": _gas_status(latest.co2, settings.co2_warning, settings.co2_danger),
         "o2": _gas_status(latest.o2, settings.o2_warning, settings.o2_danger, lower_is_worse=True),
     }
-    # Early warning: methane climbing through the early-warning band escalates to
-    # yellow even before it reaches the fixed warning limit — the trend payoff.
+    # Early warning: methane rising through the early-warning band goes yellow
+    # before it hits the fixed limit — the whole point of watching the trend.
     if (
         statuses["methane"] == "green"
         and methane_rising
@@ -109,13 +94,10 @@ def _worst(statuses: dict[str, Status]) -> tuple[Status, str]:
 
 
 def safety_actions(status: Status, metric: str) -> list[str]:
-    """Concrete escalating safety steps — the "solve" — for a level.
+    """Escalating safety steps for a level — the "solve".
 
-    Mirrors the Reg 854 response: a yellow level gets early, reversible measures
-    (ramp ventilation, notify the supervisor); a red level gets the full
-    withdrawal sequence. Cutting power to non-flameproof gear and stopping
-    ignition-capable work matter for methane because it only explodes with a
-    spark — remove the source and you buy time to get people out.
+    Yellow gets reversible measures; red gets the full withdrawal. Methane also
+    cuts ignition sources, since it only explodes with a spark.
     """
     label = _METRIC_LABEL.get(metric, metric)
     if status == "red":
@@ -138,11 +120,7 @@ def safety_actions(status: Status, metric: str) -> list[str]:
 def evaluate_level(
     level_id: str, readings: list[GasReading], settings: Settings
 ) -> LevelStatus | None:
-    """Build the full LevelStatus for one level from its reading history.
-
-    Returns None when a level has no readings yet (its sensor hasn't reported
-    since startup) so callers can simply skip it.
-    """
+    """Build the LevelStatus from a level's history. None if it has no readings yet."""
     if not readings:
         return None
 
@@ -151,8 +129,7 @@ def evaluate_level(
     statuses = _channel_statuses(latest, methane_rising, settings)
     status, metric = _worst(statuses)
 
-    # Overall trend follows the driving gas; when green, fall back to methane so
-    # an early climb still reads as "rising".
+    # Trend follows the driving gas; fall back to methane when green.
     trend_metric = metric if metric != "none" else "methane"
     trend: Trend = "rising" if _is_rising([getattr(r, trend_metric) for r in readings]) else "stable"
 
@@ -161,9 +138,8 @@ def evaluate_level(
 
     mitigation = latest.fan_speed > _FAN_IDLE
 
-    # Re-entry only means something on a level working a blast cycle. CO governs
-    # it because it clears slowest; the crew may return once CO is back under the
-    # warning limit and the level is no longer red.
+    # Re-entry only applies to the blast level. CO governs it (clears slowest):
+    # crew returns once CO is back under the warning limit and we're not red.
     re_entry_allowed: bool | None = None
     clearance: str | None = None
     if level_id == settings.active_blast_level:
@@ -197,11 +173,7 @@ def evaluate_level(
 
 
 def severity_rank(level: LevelStatus) -> tuple[int, int, float]:
-    """Sort key for choosing the highest-severity level for /alert.
-
-    Order by status severity, then whether it's rising (a rising yellow is more
-    urgent than a stable one), then a numeric tie-breaker.
-    """
+    """Sort key for /alert: status, then rising-ness, then a numeric tie-breaker."""
     return (
         _SEVERITY[level.status],
         1 if level.trend == "rising" else 0,

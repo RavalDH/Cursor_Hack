@@ -1,13 +1,7 @@
-"""Application settings.
+"""Application settings, driven by env vars (local .env). Nothing points at the cloud.
 
-Everything is driven by environment variables (loaded from a local .env) so the
-same code runs on a developer laptop and on an underground edge box without code
-changes. There is intentionally nothing here that points at the cloud — the
-whole premise is that this runs with the internet switched off.
-
-The mine's *shape* (which levels exist, how deep, what they do) lives in mine.py;
-this file holds the *operating parameters*: gas limits, ventilation tuning, the
-data-historian location, and the broker connection.
+Operating parameters live here (gas limits, ventilation tuning, historian, broker);
+the mine's shape lives in mine.py.
 """
 
 from functools import lru_cache
@@ -19,16 +13,10 @@ import mine
 
 
 class Settings(BaseSettings):
-    """Typed settings, validated once at startup.
+    """Typed settings, validated once at startup so a bad threshold/port fails at boot."""
 
-    Why pydantic-settings: a typo in a threshold or port is a config bug we want
-    to catch at boot, not three hours into a demo. Types are enforced here.
-    """
-
-    # --- MQTT: the local stand-in for the mine's self-healing mesh ---
-    # When False we skip MQTT entirely and drive levels from an internal timer.
-    # This is the live-demo safety net: if Mosquitto isn't running, the demo
-    # still shows identical /levels behaviour.
+    # --- MQTT: local stand-in for the mine mesh ---
+    # False = skip MQTT and drive levels from an internal timer (demo safety net).
     use_mqtt: bool = True
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
@@ -36,79 +24,60 @@ class Settings(BaseSettings):
     mqtt_keepalive: int = 60
 
     # --- Levels ---
-    # Comma-separated level ids. Blank means "use the full layout from mine.py".
-    # Topics become mine/<level>/gas, e.g. mine/1200L/gas.
+    # Comma-separated ids; blank = full layout from mine.py. Topic: mine/<level>/gas.
     levels: str = ""
-    # The level driven by the drill-and-blast cycle (post-blast CO/NO2 surge,
-    # then ventilation clears it for re-entry). Must be one of the levels.
+    # The level driven by the drill-and-blast cycle. Must be one of the levels.
     active_blast_level: str = mine.ACTIVE_BLAST_LEVEL
 
     # --- Trend / history ---
-    # Number of recent readings kept per level for trend + rolling-average work.
+    # Recent readings kept per level for trend + rolling averages.
     history_size: int = 12
 
-    # --- Gas limits (DEMO values; tuned for a watchable demo, not legal use) ---
-    # Methane, % by volume. Reg 854 acts at 1.0 / 1.25 / 2.5; we compress the top
-    # end so the demo crosses "danger" in seconds rather than minutes.
+    # --- Gas limits (DEMO values — compressed so danger hits in seconds, not legal use) ---
+    # Methane, % by volume.
     methane_warning: float = 1.0
     methane_danger: float = 1.5
-    # A rising trend only escalates a level to yellow once methane is already in
-    # this early-warning band, so normal sensor noise on a calm level can't
-    # false-flag it.
+    # A rising trend only escalates to yellow once methane is in this band, so
+    # sensor noise on a calm level can't false-flag it.
     methane_early_warning: float = 0.9
 
-    # Carbon monoxide, ppm. CO is the critical post-blast gas (it clears slowest),
-    # so it drives re-entry. ~25 ppm is a common occupational limit; danger well
-    # above that.
+    # Carbon monoxide, ppm. CO clears slowest, so it drives re-entry.
     co_warning: float = 25.0
     co_danger: float = 100.0
 
-    # Nitrogen dioxide, ppm — the other significant blast gas. Low limits.
+    # Nitrogen dioxide, ppm — the other blast gas, toxic at low ppm.
     no2_warning: float = 3.0
     no2_danger: float = 5.0
 
-    # Carbon dioxide, % by volume. Normal air is ~0.04%.
+    # Carbon dioxide, % by volume (normal ~0.04%).
     co2_warning: float = 0.5
     co2_danger: float = 1.5
 
-    # Oxygen, % by volume. Here LOW is the hazard (displacement/consumption).
-    # Normal is 20.9%; below ~19.5% is deficient, below 18% is dangerous.
+    # Oxygen, % by volume — here LOW is the hazard. Normal 20.9%.
     o2_warning: float = 19.5
     o2_danger: float = 18.0
 
-    # --- Ventilation-on-demand (VoD) + post-blast model (demo tuning) ---
-    # Methane added per tick to a background gas seep while active, %/tick.
+    # --- Ventilation-on-demand + post-blast model (demo tuning) ---
     methane_climb_rate: float = 0.16
-    # Methane removed per tick at full fan (scaled by fan_speed/100), %/tick.
-    # Mitigation is airflow ONLY — never oxygen enrichment, which would worsen
-    # explosion risk; the only safe lever is diluting and sweeping gas out.
+    # Methane swept out per tick at full fan. Airflow only — never O2 enrichment
+    # (more oxygen underground raises explosion risk).
     mitigation_rate: float = 0.11
-    # Peak CO (ppm) immediately after a blast on the active level, before the
-    # ramped fan starts clearing it. Chosen well above the re-entry limit so the
-    # "no re-entry -> clearing -> re-entry" arc is clearly visible.
+    # Post-blast peaks on the active level, set well above the re-entry limit so
+    # the clear -> re-entry arc is visible.
     blast_co_peak: float = 220.0
-    # Peak NO2 (ppm) just after the blast.
     blast_no2_peak: float = 8.0
-    # Fraction of post-blast gas the ventilation clears per tick at full fan.
+    # Fraction of post-blast gas cleared per tick at full fan.
     blast_clear_rate: float = 0.18
-    # Seconds the level sits safe (re-entry granted, crew working) before the
-    # next blast in the demo cycle.
+    # Seconds the level rests (crew working) before the next blast.
     blast_rest_seconds: float = 8.0
 
     # --- Simulator ---
     publish_interval: float = 1.0
 
-    # --- Offline data historian (time-based logging to disk, not just memory) ---
-    # Real environmental systems log to a data historian; underground at the edge
-    # we write append-only files locally so the record survives a restart and is
-    # auditable offline. Directory is relative to the backend folder by default.
-    log_dir: str = "logs"
-    # Keep this many days of rotating application logs.
+    # --- Offline historian (append-only files on disk, survives restarts) ---
+    log_dir: str = "logs"  # relative to the backend folder
     log_retention_days: int = 14
-    # Master switch for the on-disk historian (telemetry + events). The in-memory
-    # store always works; this adds the durable offline record on top.
     historian_enabled: bool = True
-    # Console log level for the app logger.
     log_level: str = "INFO"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -134,8 +103,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return a cached Settings instance.
-
-    Cached so every module sees the same configuration and we read the .env once.
-    """
+    """Cached Settings, so every module shares one config and .env is read once."""
     return Settings()

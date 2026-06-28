@@ -1,38 +1,10 @@
-"""FastAPI edge backend for the underground mine gas-safety early-warning system.
+"""FastAPI backend for the mine gas-safety early-warning system.
 
-================================  HOW TO RUN  ================================
-Everything is LOCAL and OFFLINE. No internet is used or required anywhere.
+Runs fully offline. Two data sources: a local MQTT broker (the "mesh"), or an
+internal timer when USE_MQTT=false so the demo works with no broker. Either way
+readings flow into an in-memory store and a dated JSONL historian on disk.
 
-1) Start a local MQTT broker (Mosquitto) — this stands in for the mine mesh:
-     # macOS:    brew install mosquitto && mosquitto
-     # Ubuntu:   sudo apt install mosquitto && mosquitto
-     # Windows:  install Mosquitto, then run `mosquitto`
-   The broker listens on localhost:1883.
-
-2) (Optional) Copy env defaults:
-     cp .env.example .env        # Windows: copy .env.example .env
-
-3) Install dependencies (ideally in a virtualenv):
-     pip install -r requirements.txt
-
-4) Start the level simulator in its own terminal (publishes readings every 1s):
-     python simulator.py
-
-5) Start the API:
-     uvicorn main:app --reload
-   Then open http://localhost:8000/levels , /alert , /health , and POST /ask.
-
------------------------------  DEMO SAFETY NET  -----------------------------
-No broker handy? Set USE_MQTT=false in .env (or the environment) and skip steps
-1 and 4 entirely. The backend then generates identical level readings on an
-internal async timer, so /levels behaves exactly the same. The mesh is the
-*story*; MQTT is just the cleanest way to show it.
-
-----------------------------  OFFLINE HISTORIAN  ----------------------------
-Every reading and every notable event is also appended to dated JSONL files
-under ./logs (telemetry/ and events/), and the app's own log rotates daily in
-logs/app.log. That on-disk record survives restarts and is fully offline.
-=============================================================================
+Run: `uvicorn main:app --reload` (set USE_MQTT=false to skip MQTT).
 """
 
 import asyncio
@@ -66,12 +38,7 @@ logger = logging.getLogger("mine.backend")
 
 
 class AppContext:
-    """Holds the long-lived objects so handlers don't reach for globals blindly.
-
-    One instance is created at startup and stashed on app.state. Keeping the
-    store, settings, historian, optional MQTT subscriber and start time together
-    makes the two run modes (MQTT vs internal timer) easy to reason about.
-    """
+    """Long-lived objects, built once at startup and stashed on app.state."""
 
     def __init__(self, settings: Settings, historian: Historian) -> None:
         self.settings = settings
@@ -90,9 +57,8 @@ class AppContext:
 async def _internal_timer_loop(ctx: AppContext) -> None:
     """Drive levels from the in-process simulator when USE_MQTT is false.
 
-    Uses the exact same LevelSimulator the MQTT publisher uses, so /levels is
-    indistinguishable between the two modes. Also mirrors each reading into the
-    historian, just like the MQTT path does.
+    Same LevelSimulator as the MQTT publisher, so /levels looks identical in
+    both modes.
     """
     interval = ctx.settings.publish_interval
     logger.info("Internal timer started (USE_MQTT=false), interval=%.1fs", interval)
@@ -109,9 +75,7 @@ async def _internal_timer_loop(ctx: AppContext) -> None:
 
 app = FastAPI(title="Mine Gas Safety Edge Backend", version="2.0.0")
 
-# Wide-open CORS: the frontend is served from a separate origin (and during the
-# demo we don't know which port), so we allow all. This is an offline LAN tool,
-# not a public API, which makes the trade-off acceptable here.
+# Allow all origins: offline LAN tool, and we don't know the frontend's port.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -126,7 +90,7 @@ async def on_startup() -> None:
     """Build state, configure offline logging, and start the data source."""
     settings = get_settings()
 
-    # Offline logging first, so everything after this is captured on disk.
+    # Logging first so everything below is captured on disk.
     log_file = configure_logging(
         settings.log_path, settings.log_level, settings.log_retention_days
     )
@@ -151,12 +115,10 @@ async def on_startup() -> None:
     )
 
     if settings.use_mqtt:
-        # Real path: subscribe to the broker. If it's down, start() logs a
-        # warning and returns; the app still serves existing state.
+        # If the broker is down, start() just warns; we still serve state.
         ctx.subscriber = MqttSubscriber(settings, ctx.store, historian)
         ctx.subscriber.start()
     else:
-        # Fallback path: generate readings ourselves on an async timer.
         ctx.simulator = LevelSimulator(settings)
         ctx.timer_task = asyncio.create_task(_internal_timer_loop(ctx))
 
@@ -178,12 +140,10 @@ async def on_shutdown() -> None:
 
 
 def _current_level_statuses(ctx: AppContext) -> list[LevelStatus]:
-    """Compute the status/trend for every level that has data.
+    """Status/trend for every level with data.
 
-    Side effect: records each level's status in the store and writes an event to
-    the historian whenever a level's status changes (e.g. green->yellow->red and
-    back). Both /levels and /alert call this, and the frontend polls /levels
-    every couple of seconds, so transitions are caught reliably.
+    Side effect: logs a historian event on each status transition. /levels and
+    /alert both call this, and the UI polls /levels, so transitions get caught.
     """
     statuses: list[LevelStatus] = []
     for level_id in ctx.store.all_level_ids():
@@ -211,11 +171,7 @@ def _current_level_statuses(ctx: AppContext) -> list[LevelStatus]:
 
 @app.get("/levels", response_model=LevelsResponse)
 async def get_levels() -> LevelsResponse:
-    """Return the latest computed status for every level.
-
-    Works from whatever is already in state, so it keeps responding even if the
-    broker is unreachable — the graceful-degradation requirement.
-    """
+    """Latest status for every level. Serves from state, so it works even with the broker down."""
     try:
         ctx: AppContext = app.state.ctx
         return LevelsResponse(mine=mine.MINE_NAME, levels=_current_level_statuses(ctx))
@@ -229,10 +185,7 @@ async def get_levels() -> LevelsResponse:
 
 @app.get("/zones", response_model=ZonesResponse)
 async def get_zones() -> ZonesResponse:
-    """Deprecated alias for /levels, kept so an existing UI polling /zones works.
-
-    Returns the identical level objects under the legacy "zones" key.
-    """
+    """Legacy alias for /levels — same objects under the "zones" key. The UI polls this."""
     try:
         ctx: AppContext = app.state.ctx
         return ZonesResponse(zones=_current_level_statuses(ctx))
@@ -246,11 +199,10 @@ async def get_zones() -> ZonesResponse:
 
 @app.get("/alert", response_model=AlertResponse)
 async def get_alert() -> AlertResponse:
-    """Return the single highest-severity level needing action, if any.
+    """Highest-severity level needing action, if any.
 
-    Fires when a level is red, or yellow-and-rising (the early-warning case). The
-    response carries the exact procedure and a Reg 854 citation so the frontend
-    can speak/show it directly.
+    Fires on red, or yellow-and-rising (the early warning). Carries the
+    procedure + Reg 854 citation so the UI can speak it directly.
     """
     try:
         ctx: AppContext = app.state.ctx
@@ -264,9 +216,8 @@ async def get_alert() -> AlertResponse:
             worst.status == "yellow" and worst.trend == "rising"
         )
         if not fires:
-            # Nothing alarming. If a level just recovered red->green, give an
-            # explicit "all clear" so the demo's voice has something reassuring
-            # to say instead of falling silent.
+            # Nothing alarming — but if a level just recovered red->green, say
+            # "all clear" so the voice isn't left silent.
             recovered_level = ctx.store.recent_recovery()
             if recovered_level is not None:
                 info = mine.describe(recovered_level)
@@ -281,8 +232,7 @@ async def get_alert() -> AlertResponse:
                 )
             return AlertResponse(alert=False)
 
-        # Report the gas actually driving the level's status (CO right after a
-        # blast, methane for a seep, etc.).
+        # Report the gas actually driving the status (CO after a blast, etc.).
         metric = worst.metric if worst.metric != "none" else "methane"
         answer, citations = procedure_for(metric, worst.status, ctx.settings)
         value, threshold = _metric_value_threshold(worst, metric, ctx.settings)
@@ -312,7 +262,7 @@ async def get_alert() -> AlertResponse:
 
 
 def _metric_value_threshold(level: LevelStatus, metric: str, settings: Settings) -> tuple[float, float]:
-    """The current value and danger threshold for the gas driving an alert."""
+    """Current value and danger threshold for the gas driving an alert."""
     table = {
         "methane": (level.methane, settings.methane_danger),
         "co": (level.co, settings.co_danger),
