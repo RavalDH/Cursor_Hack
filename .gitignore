@@ -12,6 +12,15 @@ backend/venv/
 logs/
 backend/logs/
 
+# Frontend (lovable / TanStack / Vite) build output
+frontend/node_modules/
+frontend/dist/
+frontend/.output/
+frontend/.tanstack/
+frontend/.nitro/
+*.local
+package-lock.json
+
 # Local-only developer explainer (kept out of GitHub by request)
 HOW_IT_WORKS.md
 
